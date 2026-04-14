@@ -1,5 +1,5 @@
 {
-  "name": "asa",
+  "name": "asa_project",
   "version": "1.0.0",
   "description": "",
   "homepage": "https://github.com/Scherp03/autonomous-software-agents#readme",
@@ -11,13 +11,16 @@
     "url": "git+https://github.com/Scherp03/autonomous-software-agents.git"
   },
   "license": "ISC",
-  "author": "",
-  "type": "commonjs",
+  "author": "Luca, Nicolò",
+  "type": "module",
   "main": "index.js",
+  "module": "index.js",
   "scripts": {
+    "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
-    "@unitn-asa/deliveroo-js-sdk": "^1.3.4"
+    "@unitn-asa/deliveroo-js-sdk": "^1.3.4",
+    "dotenv": "^17.4.2"
   }
 }
