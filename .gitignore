@@ -1,2 +1,6 @@
 node_modules/
 .env
+
+memory.js
+no_memory.js
+test.js
