@@ -4,8 +4,33 @@ import { distance } from './utils.js';
 import { bfs } from './pathfinding.js';
 import { IntentionDeliberation } from './agent.js';
 
+/**
+ * @typedef { {
+ *      stop: ()=>void,
+ *      stopped: boolean,
+ *      log: (...arg0: any[])=>void,
+ *      subIntention: (predicate: any) => Promise<any>,
+ *      execute: function (string, ...any) : Promise<boolean>
+ * } } Plan
+ */
+
+/**
+ * @typedef { {
+ *      name: string,
+ *      isApplicableTo: function (string, ...any) : boolean,
+ *      prototype: Plan
+ * } } PlanClass
+ */
+
+/**
+ * Plan library
+ * @type { PlanClass [] }
+ */
 export const planLibrary = [];
 
+/**
+ * @abstract
+ */
 class PlanBase {
     #stopped = false;
     stop () {
@@ -15,15 +40,25 @@ class PlanBase {
     get stopped () { return this.#stopped; }
 
     #parent;
+
+    /**
+     * @param { PlanBase } parent
+     */
     constructor ( parent ) { this.#parent = parent; }
 
+    /** @type { function(...any): void } */
     log ( ...args ) {
         if ( this.#parent?.log ) this.#parent.log( '\t', ...args );
         else console.log( ...args );
     }
 
+    /** @type { IntentionDeliberation [] } */
     #sub_intentions = [];
 
+    /**
+     * @param { [string, ...any] } predicate 
+     * @returns { Promise<boolean> }
+     */
     async subIntention ( predicate ) {
         const sub = new IntentionDeliberation( this, predicate );
         this.#sub_intentions.push( sub );
@@ -31,9 +66,19 @@ class PlanBase {
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class Explore extends PlanBase {
+    
+    /**
+     * @type { function( string, ...any ) : boolean } 
+     */
     static isApplicableTo ( explore ) { return explore === 'explore'; }
 
+    /**
+     * @type { function( string, ...any ) : Promise<boolean> } 
+     */
     async execute () {
         if ( this.stopped ) throw [ 'stopped' ];
         
@@ -62,7 +107,7 @@ export class Explore extends PlanBase {
                 return true;
             } catch (error) {}
         }
-        
+    
         const dirs = ['up', 'down', 'left', 'right'];
         const randomDir = dirs[Math.floor(Math.random() * dirs.length)];
         await socket.emitMove(randomDir);
@@ -72,9 +117,18 @@ export class Explore extends PlanBase {
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class GoPickUp extends PlanBase {
-    static isApplicableTo ( go_pick_up ) { return go_pick_up === 'go_pick_up'; }
+    /**
+     * @type { function( string, ...any ) : boolean } 
+     */
+    static isApplicableTo ( go_pick_up, x, y, id ) { return go_pick_up === 'go_pick_up'; }
 
+    /**
+     * @type { function( string, ...any ) : Promise<boolean> } 
+     */
     async execute ( go_pick_up, x, y, id ) {
         if ( this.stopped ) throw [ 'stopped' ];
         await this.subIntention( [ 'go_to', x, y ] );
@@ -86,8 +140,14 @@ export class GoPickUp extends PlanBase {
 }
 
 export class GoDeliver extends PlanBase {
+    /**
+     * @type { function( string, ...any ) : boolean } 
+     */
     static isApplicableTo ( go_deliver ) { return go_deliver === 'go_deliver'; }
 
+    /**
+     * @type { function( string, ...any ) : Promise<boolean> } 
+     */
     async execute ( go_deliver, x, y ) {
         if ( this.stopped ) throw [ 'stopped' ];
         await this.subIntention( [ 'go_to', x, y ] );
@@ -99,8 +159,14 @@ export class GoDeliver extends PlanBase {
 }
 
 export class BfsMove extends PlanBase {
+    /**
+     * @type { function( string, ...any ) : boolean } 
+     */
     static isApplicableTo ( go_to ) { return go_to === 'go_to'; }
 
+    /**
+     * @type { function( string, ...any ) : Promise<boolean> } 
+     */
     async execute ( go_to, targetX, targetY ) {
         targetX = Math.round(targetX);
         targetY = Math.round(targetY);
