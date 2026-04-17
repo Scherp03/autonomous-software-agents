@@ -48,7 +48,6 @@ socket.onSensing( ( sensing ) => {
 
 // ─── Options Generation ──────────────────────────────────────────────────────
 function optionsGeneration () {
-    if ( !me.id ) return;
 
     const carried = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id );
     const available = Array.from( parcels.values() ).filter( p => !p.carriedBy && p.reward > 10 );
@@ -70,7 +69,7 @@ function optionsGeneration () {
             return a.x - b.x; 
         })[ 0 ];
 
-        if ( bestPickUp && distance(me, bestPickUp) <= 2 ) {
+        if ( bestPickUp && distance(me, bestPickUp) <= 2 && carried.length < 5 ) {
             myAgent.push( [ 'go_pick_up', bestPickUp.x, bestPickUp.y, bestPickUp.id ] );
             return;
         }

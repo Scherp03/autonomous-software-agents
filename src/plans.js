@@ -39,6 +39,7 @@ class PlanBase {
     }
     get stopped () { return this.#stopped; }
 
+    // refers to the caller of the plan, for example an IntentionDeliberation
     #parent;
 
     /**
@@ -105,7 +106,9 @@ export class Explore extends PlanBase {
             try {
                 await this.subIntention( [ 'go_to', target.x, target.y ] );
                 return true;
-            } catch (error) {}
+            } catch (error) {
+                this.log( 'explore failed to go_to target', target, 'error:', error );
+            }
         }
     
         const dirs = ['up', 'down', 'left', 'right'];
