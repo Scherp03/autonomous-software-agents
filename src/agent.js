@@ -27,8 +27,6 @@ export class IntentionRevision {
                     this.intention_queue.shift();
                 }
             } else {
-                // Fix CPU starvation: Wait 10ms instead of instant setImmediate spinning
-                // await new Promise( res => setTimeout( res, 10 ) );
                 await new Promise( res => setImmediate( res ) );
             }
         }

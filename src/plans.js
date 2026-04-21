@@ -114,7 +114,7 @@ export class Explore extends PlanBase {
         const dirs = ['up', 'down', 'left', 'right'];
         const randomDir = dirs[Math.floor(Math.random() * dirs.length)];
         await socket.emitMove(randomDir);
-        await new Promise(res => setTimeout(res, 200)); 
+        // await new Promise(res => setTimeout(res, 100)); 
         
         return true;
     }
@@ -180,7 +180,7 @@ export class BfsMove extends PlanBase {
             const path = bfs( { x: me.x, y: me.y }, { x: targetX, y: targetY } );
             
             if ( !path || path.length == 0 ) {
-                await new Promise(res => setTimeout(res, 500)); 
+                // await new Promise(res => setTimeout(res, 100)); 
                 throw [ 'no path to', targetX, targetY ]; 
             }
 
@@ -199,16 +199,18 @@ export class BfsMove extends PlanBase {
 
                 temporaryBlocks.set(`${blockX}_${blockY}`, Date.now() + 3000);
                 
-                await new Promise(res => setTimeout(res, 200)); 
+                // await new Promise(res => setTimeout(res, 100)); 
                 continue; 
             }
 
-            await new Promise(res => setTimeout(res, 150));
+            // await new Promise(res => setTimeout(res, 100));
         }
 
         return true;
     }
 }
+
+
 
 // // Export the array so the BDI engine can iterate over available plans
 // export const planLibrary = [ GoPickUp, GoDeliver, BfsMove, Explore ];
