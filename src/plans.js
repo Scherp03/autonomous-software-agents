@@ -75,7 +75,7 @@ export class Explore extends PlanBase {
     /**
      * @type { function( string, ...any ) : boolean } 
      */
-    static isApplicableTo ( explore ) { return explore === 'explore'; }
+    static isApplicableTo ( explore ) { return explore == 'explore'; }
 
     /**
      * @type { function( string, ...any ) : Promise<boolean> } 
@@ -127,7 +127,7 @@ export class GoPickUp extends PlanBase {
     /**
      * @type { function( string, ...any ) : boolean } 
      */
-    static isApplicableTo ( go_pick_up, x, y, id ) { return go_pick_up === 'go_pick_up'; }
+    static isApplicableTo ( go_pick_up, x, y, id ) { return go_pick_up == 'go_pick_up'; }
 
     /**
      * @type { function( string, ...any ) : Promise<boolean> } 
@@ -146,7 +146,7 @@ export class GoDeliver extends PlanBase {
     /**
      * @type { function( string, ...any ) : boolean } 
      */
-    static isApplicableTo ( go_deliver ) { return go_deliver === 'go_deliver'; }
+    static isApplicableTo ( go_deliver ) { return go_deliver == 'go_deliver'; }
 
     /**
      * @type { function( string, ...any ) : Promise<boolean> } 
@@ -165,7 +165,7 @@ export class BfsMove extends PlanBase {
     /**
      * @type { function( string, ...any ) : boolean } 
      */
-    static isApplicableTo ( go_to ) { return go_to === 'go_to'; }
+    static isApplicableTo ( go_to ) { return go_to == 'go_to'; }
 
     /**
      * @type { function( string, ...any ) : Promise<boolean> } 
@@ -179,7 +179,7 @@ export class BfsMove extends PlanBase {
 
             const path = bfs( { x: me.x, y: me.y }, { x: targetX, y: targetY } );
             
-            if ( !path || path.length === 0 ) {
+            if ( !path || path.length == 0 ) {
                 await new Promise(res => setTimeout(res, 500)); 
                 throw [ 'no path to', targetX, targetY ]; 
             }
@@ -192,10 +192,10 @@ export class BfsMove extends PlanBase {
                 
                 let blockX = Math.round(me.x);
                 let blockY = Math.round(me.y);
-                if (move === 'right') blockX += 1;
-                if (move === 'left')  blockX -= 1;
-                if (move === 'up')    blockY += 1;
-                if (move === 'down')  blockY -= 1;
+                if (move == 'right') blockX += 1;
+                if (move == 'left')  blockX -= 1;
+                if (move == 'up')    blockY += 1;
+                if (move == 'down')  blockY -= 1;
 
                 temporaryBlocks.set(`${blockX}_${blockY}`, Date.now() + 3000);
                 

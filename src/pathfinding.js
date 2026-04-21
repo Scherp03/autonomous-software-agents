@@ -16,8 +16,8 @@ export function canEnter( nx, ny, blockedBy ) {
     }
 
     const tile = mapBeliefs.get( key );
-    if ( !tile || tile.type === '0' ) return false;
-    if ( tile.type === blockedBy ) return false;
+    if ( !tile || tile.type == '0' ) return false;
+    if ( tile.type == blockedBy ) return false;
     return true;
 }
 
@@ -27,7 +27,7 @@ export function bfs( from, to ) {
     const targetX = Math.round(to.x);
     const targetY = Math.round(to.y);
 
-    if ( startX === targetX && startY === targetY ) return [];
+    if ( startX == targetX && startY == targetY ) return [];
 
     const queue   = [ { x: startX, y: startY, path: [] } ];
     const visited = new Set( [ `${startX}_${startY}` ] );
@@ -44,7 +44,7 @@ export function bfs( from, to ) {
             if ( !canEnter(nx, ny, blockedBy) ) continue;
 
             const newPath = [ ...path, dir ];
-            if ( nx === targetX && ny === targetY ) return newPath;
+            if ( nx == targetX && ny == targetY ) return newPath;
 
             visited.add( key );
             queue.push( { x: nx, y: ny, path: newPath } );

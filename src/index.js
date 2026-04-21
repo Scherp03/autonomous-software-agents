@@ -18,10 +18,10 @@ socket.onMap( (width, height, tile)  => {
     for ( const tile of tiles ) {
         mapBeliefs.set( `${tile.x}_${tile.y}`, tile );
         
-        if ( tile.type === '2' && !deliveryTiles.find( t => t.x === tile.x && t.y === tile.y ) ) {
+        if ( tile.type.toString() == '2' && !deliveryTiles.find( t => t.x == tile.x && t.y == tile.y ) ) {
             deliveryTiles.push( {x: tile.x, y: tile.y} );
         }
-        if ( tile.type === '1' && !spawnTiles.find( t => t.x === tile.x && t.y === tile.y ) ) {
+        if ( tile.type.toString() == '1' && !spawnTiles.find( t => t.x == tile.x && t.y == tile.y ) ) {
             spawnTiles.push( {x: tile.x, y: tile.y} );
         }
     }
@@ -31,10 +31,10 @@ socket.onTile( ( tile ) => {
     const {x, y, type} = tile;
     mapBeliefs.set( `${x}_${y}`, tile );
     
-    if ( type === '2' && !deliveryTiles.find( t => t.x === x && t.y === y ) ) {
+    if ( type.toString() == '2' && !deliveryTiles.find( t => t.x == x && t.y == y ) ) {
         deliveryTiles.push( {x, y} );
     }
-    if ( type === '1' && !spawnTiles.find( t => t.x === x && t.y === y ) ) {
+    if ( type.toString() == '1' && !spawnTiles.find( t => t.x == x && t.y == y ) ) {
         spawnTiles.push( {x, y} );
     }
 } );
@@ -42,14 +42,14 @@ socket.onTile( ( tile ) => {
 socket.onSensing( ( sensing ) => {
     for ( const p of sensing.parcels ) parcels.set( p.id, p );
     for ( const [id] of parcels ) {
-        if ( !sensing.parcels.find( p => p.id === id ) ) parcels.delete( id );
+        if ( !sensing.parcels.find( p => p.id == id ) ) parcels.delete( id );
     }
 } );
 
 // ─── Options Generation ──────────────────────────────────────────────────────
 function optionsGeneration () {
 
-    const carried = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id );
+    const carried = Array.from( parcels.values() ).filter( p => p.carriedBy == me.id );
     const available = Array.from( parcels.values() ).filter( p => !p.carriedBy && p.reward > 10 );
 
     let bestPickUp = null;

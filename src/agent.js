@@ -23,7 +23,7 @@ export class IntentionRevision {
 
                 // Only shift if the intention we just finished is still at index 0.
                 // (In case a 'Replace' cleared the array while we were yielding)
-                if (this.intention_queue[0] === intention) {
+                if (this.intention_queue[0] == intention) {
                     this.intention_queue.shift();
                 }
             } else {
@@ -52,7 +52,7 @@ export class IntentionRevisionReplace extends IntentionRevision {
         const current = this.intention_queue[0];
 
         // // A safer shallow equality check instead of .join(' ')
-        // if ( current && JSON.stringify(current.predicate) === JSON.stringify(predicate) ) {
+        // if ( current && JSON.stringify(current.predicate) == JSON.stringify(predicate) ) {
         //     return; 
         // }
 
