@@ -200,9 +200,9 @@ For example, if the clock ticks every 50 ms and parcels decay every 1 s, then $\
 
 ### Pickup utility
 
-$$U_{\text{pickup}}(p, d^*) = \sum_{q \in \text{carried} \cup \{p\}} \left(q.\text{reward} - (\text{dist}(\text{me}, p) + \text{dist}(p, d^*)) \cdot \delta\right)$$
+$$U_{ \text{pickup} }(p, d^{\ast}) = \sum_{ q \in \text{carried} \cup \lbrace p \rbrace } \left( q.\text{reward} - (\text{dist}(\text{me}, p) + \text{dist}(p, d^{\ast})) \cdot \delta \right)$$
 
-where $d^*$ is the nearest delivery tile from the pickup location $p$.
+where $d^{\ast}$ is the nearest delivery tile from the pickup location $p$.
 
 This models the **full round-trip cost**: the agent must walk from its current position to $p$, then from $p$ to the nearest delivery. All carried parcels (not just the new one) decay for that entire journey, so the formula correctly accounts for the opportunity cost of detours.
 
