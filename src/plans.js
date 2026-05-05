@@ -163,6 +163,10 @@ export class GoDeliver extends PlanBase {
         
         if ( this.stopped ) throw [ 'stopped' ];
         await socket.emitPutdown();
+        // After delivery, remove the delivered parcels from beliefs to prevent re-planning on them. 
+        for ( const [ id, p ] of parcels ) {                  
+            if ( p.carriedBy === me.id ) parcels.delete( id );
+        }
         return true;
     }
 }
