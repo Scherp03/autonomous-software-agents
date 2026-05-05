@@ -68,7 +68,7 @@ export const gameConfig = {
             reward_variance: 10,
         },
         player: {
-            movement_duration: 50,
+            movement_duration: 100,
             observation_distance: 5,
             capacity: 5,
         },

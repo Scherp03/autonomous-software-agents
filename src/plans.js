@@ -167,7 +167,7 @@ export class GoDeliver extends PlanBase {
     }
 }
 
-export class BfsMove extends PlanBase {
+export class AStarMove extends PlanBase {
     /**
      * @type { function( string, ...any ) : boolean } 
      */
@@ -232,4 +232,4 @@ export class BfsMove extends PlanBase {
 
 
 // // Export the array so the BDI engine can iterate over available plans
-// export const planLibrary = [ GoPickUp, GoDeliver, BfsMove, Explore ];
+// export const planLibrary = [ GoPickUp, GoDeliver, AStarMove, Explore ];

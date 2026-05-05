@@ -2,7 +2,7 @@ import { socket } from './socket.js';
 import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig } from './beliefs.js';
 import { distance } from './utils.js';
 import { IntentionRevisionRevise } from './agent.js';
-import { GoPickUp, GoDeliver, BfsMove, Explore, planLibrary } from './plans.js';
+import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary } from './plans.js';
 
 // ─── Belief Revision (Socket Listeners) ──────────────────────────────────────
 socket.onConfig( config => {
@@ -19,7 +19,11 @@ socket.onConfig( config => {
         if ( g.parcels     !== undefined ) Object.assign( gameConfig.GAME.parcels, g.parcels );
         if ( g.player      !== undefined ) Object.assign( gameConfig.GAME.player,  g.player  );
     }
-    console.log( '[config]', JSON.stringify( gameConfig, null, 2 ) );
+    // log the config without the map layout for readability
+    const configWithoutMap = {...gameConfig};
+    delete configWithoutMap.GAME.map;
+    
+    console.log( '[config]', JSON.stringify( configWithoutMap, null, 2 ) );
 } );
 
 socket.onYou( ( {id, name, x, y, score} ) => {
@@ -142,5 +146,5 @@ myAgent.loop();
 
 planLibrary.push( GoPickUp );
 planLibrary.push( GoDeliver );
-planLibrary.push( BfsMove );
+planLibrary.push( AStarMove );
 planLibrary.push( Explore );

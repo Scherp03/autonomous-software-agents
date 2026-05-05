@@ -62,8 +62,13 @@ export class IntentionRevisionRevise extends IntentionRevision {
             const carried = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id );
             if ( carried.length === 0 ) return -1;
             const dist = distance( me, { x, y } );
-            return carried.reduce( (sum, p) => sum + p.reward - dist * decayPerStep, 0 )
-                 + gameConfig.GAME.parcels.reward_variance / 2;
+
+            // sum of utilities of all parcels being delivered, where utility of each parcel is max(0, reward - decayPerStep * dist)
+            const partialUtility = carried.reduce( (sum, p) => sum + Math.max(0, p.reward - dist * decayPerStep), 0 );
+
+            if ( partialUtility < 1 ) return -1; // If all parcels would have 0 or negative utility, skip delivery
+
+            return partialUtility + gameConfig.GAME.parcels.reward_variance / 2;
         }
 
         if ( action === 'go_pick_up' ) {
@@ -81,9 +86,16 @@ export class IntentionRevisionRevise extends IntentionRevision {
 
             // All parcels (carried + new) decay for the full trip: me→parcel→delivery
             const totalSteps = distance( me, { x, y } ) + nearestDel.d;
-            return [ ...carried, parcel ].reduce(
-                (sum, p) => sum + p.reward - totalSteps * decayPerStep, 0
-            );
+
+            // Utility of the new parcel is its reward minus decay over the full trip, 
+            // and utility of carried parcels also decays more while detouring for the pickup. 
+            // If totalSteps is large, this may make the pickup not worth it.
+            const revisedUtility = [ ...carried, parcel ].reduce(
+                (sum, p) => sum + Math.max(0, p.reward - totalSteps * decayPerStep), 0);
+
+            if ( revisedUtility < 1 ) return -1; // If all parcels would have 0 or negative utility, skip pickup
+
+            return revisedUtility;
         }
 
         if ( action === 'explore' ) return 0;

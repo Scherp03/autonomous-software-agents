@@ -180,9 +180,12 @@ Key properties:
 
 The utility function is the core of the improved agent's deliberation. All intentions are ranked on a single comparable scale.
 
+Sum of utilities of all parcels being delivered, where utility of each parcel is max(0, reward - decayPerStep * dist)
+
+
 ### Delivery utility
 
-$$U_{\text{deliver}}(d) = \left(\sum_{p \in \text{carried}} p.\text{reward} - \text{dist}(\text{me}, d) \cdot \delta\right) + \frac{\sigma_r}{2}$$
+$$U_{\text{deliver}}(d) = \sum_{p \in \text{carried}} (max\left(0, p.\text{reward} - \text{dist}(\text{me}, d) \cdot \delta\right)) + \frac{\sigma_r}{2}$$
 
 where:
 - $\text{dist}(\text{me}, d)$ — A\* distance to delivery tile $d$
@@ -200,7 +203,7 @@ For example, if the clock ticks every 50 ms and parcels decay every 1 s, then $\
 
 ### Pickup utility
 
-$$U_{ \text{pickup} }(p, d^{\ast}) = \sum_{ q \in \text{carried} \cup \lbrace p \rbrace } \left( q.\text{reward} - (\text{dist}(\text{me}, p) + \text{dist}(p, d^{\ast})) \cdot \delta \right)$$
+$$U_{ \text{pickup} }(p, d^{\ast}) = \sum_{ q \in \text{carried} \cup \lbrace p \rbrace } (max\left(0, q.\text{reward} - (\text{dist}(\text{me}, p) + \text{dist}(p, d^{\ast})) \cdot \delta \right))$$
 
 where $d^{\ast}$ is the nearest delivery tile from the pickup location $p$.
 
