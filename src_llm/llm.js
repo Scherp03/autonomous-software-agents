@@ -1,0 +1,537 @@
+import "dotenv/config";
+import OpenAI from "openai";
+import { dynamicRules } from "./beliefs.js";
+import { socket } from "./socket.js";
+// import me from "./beliefs.js";
+
+// ==========================================
+// 1. LiteLLM Configuration
+// ==========================================
+
+const baseURL = process.env.LITELLM_BASE_URL || "https://llm.bears.disi.unitn.it/v1";
+const apiKey = process.env.LITELLM_API_KEY;
+const MODEL = process.env.LOCAL_MODEL || "llama-3.3-70b-lmstudio";
+
+if (!apiKey) {
+  console.error("Error: missing LITELLM_API_KEY in .env file");
+  process.exit(1);
+}
+
+// ==========================================
+// 2. OpenAI-compatible client
+// ==========================================
+
+const client = new OpenAI({
+  baseURL,
+  apiKey,
+});
+
+// ==========================================
+// 3. Tools
+// ==========================================
+
+function set_forbidden_tile(input) {
+    const [x, y] = input.split(',').map(s => Number(s.trim()));
+    dynamicRules.forbiddenTiles.add(`${x}_${y}`);
+    return `Tile (${x},${y}) is now forbidden.`;
+}
+
+function set_delivery_multiplier(input) {
+    const [x, y, multiplier] = input.split(',').map(s => Number(s.trim()));
+    dynamicRules.deliveryMultipliers.set(`${x}_${y}`, multiplier);
+    return `Delivery multiplier at (${x},${y}) set to ${multiplier}x.`;
+}
+
+function set_stack_size_rule(input) {
+    const [size, multiplier] = input.split(',').map(s => Number(s.trim()));
+    dynamicRules.stackSizeRule = { size, multiplier };
+    return `Stack rule applied: Stacks of exactly ${size} get a ${multiplier}x multiplier.`;
+}
+
+function set_parcel_filter(input) {
+    const maxReward = Number(input.trim());
+    dynamicRules.parcelMaxReward = maxReward;
+    return `Will no longer pick up parcels with a reward higher than ${maxReward}.`;
+}
+
+function set_bonus_tile(input) {
+    const [x, y, pts] = input.split(',').map(s => Number(s.trim()));
+    dynamicRules.bonusTiles.set(`${x}_${y}`, pts);
+    return `Bonus of ${pts}pts set for tile (${x},${y}).`;
+}
+
+function calculate(expression) {
+  console.log("---- CALCULATE ----");
+
+  try {
+    // Demo only: eval is unsafe for production
+    return String(eval(expression));
+  } catch (error) {
+    return `Error: ${error.message}`;
+  }
+}
+
+const TOOLS = {
+    calculate,
+    set_forbidden_tile,
+    set_delivery_multiplier,
+    set_stack_size_rule,
+    set_parcel_filter,
+    set_bonus_tile
+};
+// ==========================================
+// 4. Reusable LLM call
+// ==========================================
+
+async function callModel(messages, { temperature = 0 } = {}) {
+  const response = await client.chat.completions.create({
+    model: MODEL,
+    messages,
+    temperature,
+  });
+
+  return response.choices?.[0]?.message?.content ?? "";
+}
+
+// ==========================================
+// 5. Output parsing
+// ==========================================
+
+function extractAction(text) {
+  const actionMatch = text.match(/^Action:\s*(.+)$/im);
+  const actionInputMatch = text.match(/^Action Input:\s*(.+)$/im);
+
+  if (!actionMatch || !actionInputMatch) {
+    return null;
+  }
+
+  return {
+    action: actionMatch[1].trim(),
+    actionInput: actionInputMatch[1].trim(),
+  };
+}
+
+function extractStepResult(text) {
+  const match = text.match(/^Step Result:\s*([\s\S]*)$/im);
+
+  if (!match) {
+    return null;
+  }
+
+  return match[1].trim();
+}
+
+function countActions(text) {
+  const matches = text.match(/^Action:\s*.+$/gim);
+  return matches ? matches.length : 0;
+}
+
+function hasBothActionAndStepResult(text) {
+  const actionMatch = text.match(/^Action:\s*(.+)$/im);
+  const stepResultMatch = text.match(/^Step Result:\s*[\s\S]*$/im);
+
+  if (!actionMatch || !stepResultMatch) {
+    return false;
+  }
+
+  const action = actionMatch[1].trim().toLowerCase();
+
+  return action !== "none";
+}
+
+function safeJsonParse(text) {
+  const cleaned = text
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+}
+
+// ==========================================
+// 6. Prompts
+// ==========================================
+
+const PLANNER_PROMPT = `
+You are the strategic planning module of an AI agent connected to a DeliverooJS environment.
+The agent moves and operates autonomously. Your job is NOT to move the agent, but to translate user messages about game rules, bonuses, and penalties into configuration steps.
+
+Available tools:
+- calculate(expression): evaluates a mathematical expression
+- get_current_time(location): returns the current local time for Rome/Roma
+- set_forbidden_tile(coordinates): prevents the agent from entering a tile. Input format: "x, y" (e.g., "4, 7")
+- set_delivery_multiplier(params): multiplies the reward for delivering at a tile. Input format: "x, y, multiplier" (e.g., "4, 7, 5")
+- set_stack_size_rule(params): requires the agent to carry exactly 'size' parcels to get a 'multiplier'. Input format: "size, multiplier" (e.g., "3, 2")
+- set_parcel_filter(maxReward): instructs the agent to ignore parcels with a reward strictly higher than maxReward. Input format: "maxReward" (e.g., "10")
+- set_bonus_tile(params): assigns a bonus of points for visiting a tile. Input format: "x, y, pts" (e.g., "4, 7, 10")
+
+Rules:
+- Return ONLY valid JSON.
+- Do not use markdown.
+- Do not explain.
+- Keep the plan short: 1 to 5 steps.
+- Each step must be concrete and executable.
+- If the user uses math to define coordinates (e.g., "x=4*2"), include a step that uses calculate first.
+- If the user mentions a penalty for moving to a tile, use set_forbidden_tile.
+- Do NOT try to move the agent or check its position.
+
+Return exactly this JSON shape:
+{
+  "steps": [
+    "step 1",
+    "step 2"
+  ]
+}
+`.trim();
+
+const EXECUTOR_PROMPT = `
+You are the rule-execution module inside an AI agent connected to a DeliverooJS environment.
+You execute exactly ONE step at a time to update the agent's internal rules.
+
+Available tools:
+- calculate(expression)
+- get_current_time(location)
+- set_forbidden_tile(coordinates) -> format: "x, y"
+- set_delivery_multiplier(params) -> format: "x, y, multiplier"
+- set_stack_size_rule(params) -> format: "size, multiplier"
+- set_parcel_filter(maxReward) -> format: "maxReward"
+- set_bonus_tile(params) -> format: "x, y, pts"
+
+You receive:
+- the original user request
+- the full plan
+- completed step results so far
+- the current step to execute
+
+STRICT OUTPUT FORMAT — choose exactly one format.
+
+FORMAT 1 — use one tool:
+
+Thought: <brief reasoning>
+Action: <tool name>
+Action Input: <tool input>
+
+FORMAT 2 — step complete:
+
+Thought: I completed this step.
+Step Result: <result for this step>
+
+Rules:
+- Execute only the current step.
+- Output exactly one action at a time.
+- Never write Action: None.
+- Do not invent tool results.
+- For tools requiring multiple arguments, you MUST separate them with commas in the Action Input (e.g., Action Input: 4, 7, 10).
+- If the current step requires math, call calculate.
+- Do NOT attempt to use 'move' or 'get_my_position'. They no longer exist.
+- Once a tool returns a success observation, return the Step Result in the next turn.
+`.trim();
+
+const FINAL_ANSWER_PROMPT = `
+You are the final response module of an AI agent.
+
+You receive:
+- the original user request
+- the plan that was executed
+- the result of each step
+
+Write a clear, concise final answer for the user.
+If any step failed or could not be verified, say so explicitly.
+`.trim();
+
+// ==========================================
+// 7. Conversation memory
+// ==========================================
+
+// Global memory stores only the visible conversation.
+// It does not store internal actions, observations, or plans.
+const messages = [
+  {
+    role: "system",
+    content: "You are a concise assistant.",
+  },
+];
+
+// ==========================================
+// 8. Planner
+// ==========================================
+
+async function createPlan(userInput) {
+  const plannerMessages = [
+    {
+      role: "system",
+      // content: PLANNER_PROMPT + `\n\nCurrent state: x=${me.x}, y=${me.y}`,
+      content: PLANNER_PROMPT,
+
+    },
+    {
+      role: "user",
+      content: userInput,
+    },
+  ];
+
+  const rawPlan = await callModel(plannerMessages, { temperature: 0 });
+
+  console.log("=== PLAN RAW OUTPUT ===");
+  console.log(rawPlan);
+  console.log();
+
+  const parsedPlan = safeJsonParse(rawPlan);
+
+  if (
+    !parsedPlan ||
+    !Array.isArray(parsedPlan.steps) ||
+    parsedPlan.steps.length === 0
+  ) {
+    console.log("Warning: planner returned invalid JSON. Using fallback plan.\n");
+
+    return {
+      steps: [`Answer the user's request: ${userInput}`],
+    };
+  }
+
+  return parsedPlan;
+}
+
+// ==========================================
+// 9. Step executor
+// ==========================================
+
+async function executeStep(step, context, maxStepIterations = 4) {
+  const stepMessages = [
+    {
+      role: "system",
+      content: EXECUTOR_PROMPT,
+    },
+    {
+      role: "user",
+      content:
+        `Original user request:\n${context.userInput}\n\n` +
+        `Full plan:\n${context.plan.steps
+          .map((s, index) => `${index + 1}. ${s}`)
+          .join("\n")}\n\n` +
+        `Completed step results so far:\n${
+          context.completedResults.length > 0
+            ? context.completedResults
+                .map((result, index) => `${index + 1}. ${result}`)
+                .join("\n")
+            : "None"
+        }\n\n` +
+        `Current step to execute:\n${step}`,
+    },
+  ];
+
+  console.log("=== EXECUTING STEP ===");
+  console.log(step);
+  console.log();
+
+  for (let i = 0; i < maxStepIterations; i++) {
+    console.log(`--- Step iteration ${i + 1} ---`);
+
+    const assistantMessage = await callModel(stepMessages, { temperature: 0 });
+
+    console.log(`Assistant output:\n${assistantMessage}\n`);
+
+    stepMessages.push({
+      role: "assistant",
+      content: assistantMessage,
+    });
+
+    const actionCount = countActions(assistantMessage);
+    const mixedOutput = hasBothActionAndStepResult(assistantMessage);
+
+    if (actionCount > 1) {
+      console.log(
+        `[Warning: model output contained ${actionCount} actions. ` +
+          `The runtime will execute only the first one.]\n`
+      );
+    }
+
+    if (mixedOutput) {
+      console.log(
+        "[Warning: model output contained both Action and Step Result. " +
+          "The runtime will execute the Action and ignore the premature Step Result.]\n"
+      );
+    }
+
+    // Defensive rule:
+    // If an Action is present, execute it before accepting any Step Result.
+    const parsedAction = extractAction(assistantMessage);
+
+    if (parsedAction) {
+      const { action, actionInput } = parsedAction;
+
+      let observation;
+
+      if (TOOLS[action]) {
+        console.log(`[System executing tool: ${action}("${actionInput}")]`);
+        observation = await TOOLS[action](actionInput);
+      } else {
+        observation =
+          `Error: unknown tool '${action}'. ` +
+          `Available tools: ${Object.keys(TOOLS).join(", ")}`;
+      }
+
+      console.log(`[Observation: ${observation}]\n`);
+
+      stepMessages.push({
+        role: "user",
+        content:
+          `Observation: ${observation}\n\n` +
+          `Now complete the current step. ` +
+          `Return a Step Result. Do not execute future steps. ` +
+          `Remember: output only one Action or one Step Result.`,
+      });
+
+      continue;
+    }
+
+    const stepResult = extractStepResult(assistantMessage);
+
+    if (stepResult) {
+      return {
+        success: true,
+        result: stepResult,
+      };
+    }
+
+    const observation =
+      "Error: invalid format. You must output either one Action or one Step Result.";
+
+    console.log(`[Observation: ${observation}]\n`);
+
+    stepMessages.push({
+      role: "user",
+      content: `Observation: ${observation}`,
+    });
+  }
+
+  return {
+    success: false,
+    result: `Step could not be completed: ${step}`,
+  };
+}
+
+// ==========================================
+// 10. Final answer builder
+// ==========================================
+
+async function buildFinalAnswer(userInput, plan, completedResults) {
+  const finalMessages = [
+    {
+      role: "system",
+      content: FINAL_ANSWER_PROMPT,
+    },
+    {
+      role: "user",
+      content:
+        `Original user request:\n${userInput}\n\n` +
+        `Executed plan:\n${plan.steps
+          .map((step, index) => `${index + 1}. ${step}`)
+          .join("\n")}\n\n` +
+        `Step results:\n${completedResults
+          .map((result, index) => `${index + 1}. ${result}`)
+          .join("\n")}`,
+    },
+  ];
+
+  return await callModel(finalMessages, { temperature: 0.1 });
+}
+
+// ==========================================
+// 11. Agent turn
+// ==========================================
+
+async function runAgentTurn(userInput) {
+  // 1. Create a plan
+  const plan = await createPlan(userInput);
+
+  console.log("=== PLAN ===");
+  plan.steps.forEach((step, index) => {
+    console.log(`${index + 1}. ${step}`);
+  });
+  console.log();
+
+  // 2. Execute each planned step explicitly
+  const completedResults = [];
+
+  for (const step of plan.steps) {
+    const execution = await executeStep(step, {
+      userInput,
+      plan,
+      completedResults,
+    });
+
+    completedResults.push(execution.result);
+  }
+
+  console.log("=== STEP RESULTS ===");
+  completedResults.forEach((result, index) => {
+    console.log(`${index + 1}. ${result}`);
+  });
+  console.log();
+
+  // 3. Build final answer from all step results
+  const finalAnswer = await buildFinalAnswer(userInput, plan, completedResults);
+
+  console.log(`Assistant: ${finalAnswer}\n`);
+
+  // 4. Store only visible conversation
+  messages.push({
+    role: "user",
+    content: userInput,
+  });
+
+  messages.push({
+    role: "assistant",
+    content: finalAnswer,
+  });
+  
+}
+
+// ==========================================
+// 12. DeliverooJS Chat Listener
+// ==========================================
+
+console.log("Planner + Executor Agent started.");
+console.log("Listening to DeliverooJS chat...");
+console.log("Only accepting commands from player id: 'admin'.\n");
+
+socket.onMsg(async (id, name, msg) => {
+  // Security check: Ignore all messages unless the ID is exactly 'admin'
+
+  // if (id != "####" && name.toLowerCase() != "admin") {
+  if (id != "4c3c93" && name.toLowerCase() != "J0K3R") {
+    console.log(`[Blocked] Ignored message from ${name} (${id}): ${msg}`);
+    return; 
+  }
+
+  console.log("=== AUTHORIZED COMMAND FROM ADMIN ===");
+  console.log(`Message: ${msg}\n`);
+
+  const command = msg.trim().toLowerCase();
+
+  if (command === "/memory") {
+    console.dir(messages, { depth: null });
+    console.log();
+    return;
+  }
+
+  if (command === "/reset") {
+    messages.splice(1);
+    console.log("Conversation memory reset.\n");
+    return;
+  }
+
+  if (msg.trim() === "") {
+    return;
+  }
+
+  await runAgentTurn(msg);
+
+  console.log(`Visible memory contains ${messages.length} messages.\n`);
+});
