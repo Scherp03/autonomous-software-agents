@@ -1,5 +1,5 @@
 import { socket } from './socket.js';
-import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, dynamicRules } from './beliefs.js';
+import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, dynamicRules, mapWidthxHeight, CAPACITY } from './beliefs.js';
 import { distance } from './utils.js';
 import { IntentionRevisionRevise } from './agent.js';
 import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary, GoToBonus } from './plans.js';
@@ -34,6 +34,14 @@ socket.onYou( ( {id, name, x, y, score} ) => {
     me.x     = x ?? me.x;
     me.y     = y ?? me.y;
     me.score = score;
+
+    // consume bonus tiles the moment we step on them
+    const currentTileKey = `${me.x}_${me.y}`;
+    
+    if (dynamicRules.bonusTiles.has(currentTileKey)) {
+        dynamicRules.bonusTiles.delete(currentTileKey);
+        console.log(`[Bonus] Walked through bonus tile ${currentTileKey}! Bonus cleared.`);
+    }
 } );
 
 function updateTileBelief( x, y, type ) {
@@ -77,10 +85,13 @@ function recomputeSpawnWeights() {
 
 socket.onMap( (width, height, tile) => {
     const tiles = Array.isArray(tile) ? tile : (tile || []);
+    mapWidthxHeight.x = width;
+    mapWidthxHeight.y = height;
     for ( const tile of tiles ) {
         mapBeliefs.set( `${tile.x}_${tile.y}`, tile );
         updateTileBelief( tile.x, tile.y, tile.type );
     }
+    console.log( `[map] Received map of size ${width}x${height}` );
     recomputeSpawnWeights();
 });
 
@@ -130,7 +141,7 @@ export function optionsGeneration () {
     // Propose delivery...
     // IMPORTANT: If stack size rule is active, delay delivery until we meet the stack requirement
     if ( carried.length > 0 && deliveryTiles.length > 0 ) {
-        if (!dynamicRules.stackSizeRule || carried.length === dynamicRules.stackSizeRule.size || carried.length === gameConfig.GAME.player.capacity) {
+        if (!dynamicRules.stackSizeRule || carried.length == dynamicRules.stackSizeRule.size) {
             const nearestDelivery = deliveryTiles.reduce( (best, t) => {
                 const d = distance( me, t );
                 return d < best.d ? { t, d } : best;
@@ -143,7 +154,7 @@ export function optionsGeneration () {
 
     // Propose each available parcel as a pickup, unless already at capacity
     // or another visible agent is strictly closer to that parcel
-    if ( carried.length < gameConfig.GAME.player.capacity ) {
+    if ( carried.length < CAPACITY ) {
         for ( const p of available ) {
             const closerAgentExists = Array.from( agents.values() ).some(
                 a => distance( a, p ) < distance( me, p )

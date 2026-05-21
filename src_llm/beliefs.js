@@ -5,6 +5,9 @@ export const me = { id: '', name: '', x: -1, y: -1, score: 0 };
  */
 export const mapBeliefs = new Map();
 
+/** @type {{x:number, y:number}} */
+export const mapWidthxHeight = { x: 0, y: 0 };
+
 /** @type { {x:number, y:number}[] } */
 export const deliveryTiles = [];
 
@@ -80,5 +83,7 @@ export const dynamicRules = {
     deliveryMultipliers: new Map(),    // Map "x_y" -> multiplier
     stackSizeRule: null,               // { size: number, multiplier: number }
     parcelMaxReward: Infinity,         // Max score threshold
-    bonusTiles: new Map()              // Map "x_y" -> bonus points
+    bonusTiles: new Map(),             // Map "x_y" -> bonus points
 };
+
+export const CAPACITY = gameConfig.GAME.player.capacity;

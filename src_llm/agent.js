@@ -14,14 +14,14 @@ export class IntentionRevision {
             if ( this.intention_queue.length > 0 ) {
                 const intention = this.intention_queue[0];
 
-                console.log( 'intentionRevision.loop', this.intention_queue.map(i=>i.predicate) );
+                // console.log( 'intentionRevision.loop', this.intention_queue.map(i=>i.predicate) );
                 // Execution wrapped safely. 
                 // Plans should validate their own targets before/during execution.
                 try {
                     await intention.achieve();
                 } catch ( err ) {
                     // Swallow expected plan failures or 'stopped' signals
-                    console.log( 'Failed intention', ...intention.predicate, 'with error:', err )
+                    // console.log( 'Failed intention', ...intention.predicate, 'with error:', err )
                 }
 
                 // Only shift if the intention we just finished is still at index 0.
@@ -69,6 +69,10 @@ export class IntentionRevisionRevise extends IntentionRevision {
         if ( action === 'go_deliver' ) {
             const carried = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id );
             if ( carried.length === 0 ) return -1;
+
+            const isTooHigh = carried.some( p => p.reward > dynamicRules.parcelMaxReward );
+            if ( isTooHigh ) return -1;
+
             const dist = distance( me, { x, y } );
 
             // sum of utilities of all parcels being delivered, where utility of each parcel is max(0, reward - decayPerStep * dist)
@@ -76,7 +80,7 @@ export class IntentionRevisionRevise extends IntentionRevision {
 
             // NEW: Apply Stack Size Rule
             if (dynamicRules.stackSizeRule) {
-                if (carried.length === dynamicRules.stackSizeRule.size) {
+                if (carried.length == dynamicRules.stackSizeRule.size) {
                     partialUtility *= dynamicRules.stackSizeRule.multiplier;
                 } else {
                     // Penalize delivery if not matching exact stack requirement
@@ -105,7 +109,6 @@ export class IntentionRevisionRevise extends IntentionRevision {
             const parcel = parcels.get( id );
             if ( !parcel || parcel.carriedBy ) return -1;
 
-            // NEW: Check Parcel Filter
             if ( parcel.reward > dynamicRules.parcelMaxReward ) return -1;
 
             const carried = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id );
@@ -145,7 +148,7 @@ export class IntentionRevisionRevise extends IntentionRevision {
         // 1. Evaluate validity of intention
         const utility = this.getUtility( predicate );
         if ( utility < 0 ) {
-            console.log( '\tIntention rejected (invalid or low utility):', ...predicate );
+            // console.log( '\tIntention rejected (invalid or low utility):', ...predicate );
             return; 
         }
 
@@ -219,7 +222,7 @@ export class IntentionDeliberation {
     get stopped () { return this.#stopped; }
     
     stop () {
-        this.log( 'stop intentionDeliberation', ...this.#predicate );
+        // this.log( 'stop intentionDeliberation', ...this.#predicate );
         this.#stopped = true;
         if ( this.#current_plan ) this.#current_plan.stop();
     }
@@ -271,14 +274,14 @@ export class IntentionDeliberation {
             if ( planClass.isApplicableTo( ...this.predicate ) ) {
                 // plan is instantiated with a reference to the current intention (this) as its parent, so it can call subIntention if needed
                 this.#current_plan = new planClass( this.#parent );
-                this.log('achieving intention', ...this.predicate, 'with plan', planClass.name);
+                // this.log('achieving intention', ...this.predicate, 'with plan', planClass.name);
                 // and plan is executed and result returned to the caller (true if achieved, false if failed but no error, or error thrown if failed with error) 
                 try {
                     const res = await this.#current_plan?.execute( ...this.predicate );
-                    this.log( 'succesful intention', ...this.predicate, 'with plan', planClass.name, 'with result:', res );
+                    // this.log( 'succesful intention', ...this.predicate, 'with plan', planClass.name, 'with result:', res );
                     return res || false;
                 } catch ( error ) {
-                    this.log( 'failed', ...this.predicate, 'error:', error );
+                    // this.log( 'failed', ...this.predicate, 'error:', error );
                 }
             }
         }

@@ -51,13 +51,23 @@ function set_stack_size_rule(input) {
 function set_parcel_filter(input) {
     const maxReward = Number(input.trim());
     dynamicRules.parcelMaxReward = maxReward;
-    return `Will no longer pick up parcels with a reward higher than ${maxReward}.`;
+    return `Agent will now pick up parcels, but wait to deliver them until their reward decays to ${maxReward} or below.`;
 }
 
 function set_bonus_tile(input) {
-    const [x, y, pts] = input.split(',').map(s => Number(s.trim()));
-    dynamicRules.bonusTiles.set(`${x}_${y}`, pts);
-    return `Bonus of ${pts}pts set for tile (${x},${y}).`;
+  const [x, y, pts] = input.split(',').map(s => Number(s.trim()));
+    const key = `${x}_${y}`;
+    
+    let message = `Bonus of ${pts}pts set for tile (${x},${y}).`;
+    
+    // Check if the tile is currently blacklisted
+    if (dynamicRules.forbiddenTiles.has(key)) {
+      dynamicRules.forbiddenTiles.delete(key); // Remove it from the blacklist
+      message += ` (Note: This tile was previously forbidden and has now been unblocked).`;
+    }
+    
+    dynamicRules.bonusTiles.set(key, pts);
+  return message;
 }
 
 function calculate(expression) {
@@ -157,7 +167,7 @@ function safeJsonParse(text) {
 // ==========================================
 
 const PLANNER_PROMPT = `
-You are the strategic planning module of an AI agent connected to a DeliverooJS environment.
+You are the strategic planning module of an AI agent connected to a game environment, called DeliverooJS .
 The agent moves and operates autonomously. Your job is NOT to move the agent, but to translate user messages about game rules, bonuses, and penalties into configuration steps.
 
 Available tools:
@@ -166,7 +176,7 @@ Available tools:
 - set_forbidden_tile(coordinates): prevents the agent from entering a tile. Input format: "x, y" (e.g., "4, 7")
 - set_delivery_multiplier(params): multiplies the reward for delivering at a tile. Input format: "x, y, multiplier" (e.g., "4, 7, 5")
 - set_stack_size_rule(params): requires the agent to carry exactly 'size' parcels to get a 'multiplier'. Input format: "size, multiplier" (e.g., "3, 2")
-- set_parcel_filter(maxReward): instructs the agent to ignore parcels with a reward strictly higher than maxReward. Input format: "maxReward" (e.g., "10")
+- set_parcel_filter(maxReward): instructs the agent to wait to deliver parcels until their reward decays to maxReward or below. Input format: "maxReward" (e.g., "10")
 - set_bonus_tile(params): assigns a bonus of points for visiting a tile. Input format: "x, y, pts" (e.g., "4, 7, 10")
 
 Rules:
@@ -198,7 +208,7 @@ Available tools:
 - set_forbidden_tile(coordinates) -> format: "x, y"
 - set_delivery_multiplier(params) -> format: "x, y, multiplier"
 - set_stack_size_rule(params) -> format: "size, multiplier"
-- set_parcel_filter(maxReward) -> format: "maxReward"
+- set_parcel_filter(maxReward): instructs the agent to wait to deliver parcels until their reward decays to maxReward or below. Input format: "maxReward" (e.g., "10")
 - set_bonus_tile(params) -> format: "x, y, pts"
 
 You receive:
@@ -505,10 +515,10 @@ socket.onMsg(async (id, name, msg) => {
   // Security check: Ignore all messages unless the ID is exactly 'admin'
 
   // if (id != "####" && name.toLowerCase() != "admin") {
-  if (id != "4c3c93" && name.toLowerCase() != "J0K3R") {
-    console.log(`[Blocked] Ignored message from ${name} (${id}): ${msg}`);
-    return; 
-  }
+  // if (id != "4c3c93" && name.toLowerCase() != "J0K3R") {
+  //   console.log(`[Blocked] Ignored message from ${name} (${id}): ${msg}`);
+  //   return; 
+  // }
 
   console.log("=== AUTHORIZED COMMAND FROM ADMIN ===");
   console.log(`Message: ${msg}\n`);

@@ -1,5 +1,5 @@
 import { socket } from './socket.js';
-import { me, mapBeliefs, spawnTiles, spawnWeights, parcels, gameConfig, temporaryBlocks } from './beliefs.js';
+import { me, mapBeliefs, spawnTiles, spawnWeights, parcels, gameConfig, temporaryBlocks, CAPACITY, dynamicRules } from './beliefs.js';
 import { distance, weightedRandom } from './utils.js';
 import { astar } from './pathfinding.js';
 import { IntentionDeliberation } from './agent.js';
@@ -113,7 +113,7 @@ export class Explore extends PlanBase {
                 await this.subIntention( [ 'go_to', target.x, target.y ] );
                 return true;
             } catch (error) {
-                this.log( 'explore failed to go_to target', target, 'error:', error );
+                // this.log( 'explore failed to go_to target', target, 'error:', error );
             }
         }
     
@@ -198,7 +198,7 @@ export class AStarMove extends PlanBase {
             const result = await socket.emitMove( move );
 
             if ( !result ) {
-                this.log( `Move ${move} failed. Blacklisting tile temporarily.` );
+                // this.log( `Move ${move} failed. Blacklisting tile temporarily.` );
 
                 let blockX = Math.round(me.x);
                 let blockY = Math.round(me.y);
@@ -217,13 +217,16 @@ export class AStarMove extends PlanBase {
             // interrupting the current plan. Uses the confirmed position from the move result.
             const { x: newX, y: newY } = result;
             const carried = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id );
-            if ( carried.length < gameConfig.GAME.player.capacity ) {
+            if ( carried.length < CAPACITY ) {
                 const parcelOnTile = Array.from( parcels.values() ).some(
                     p => !p.carriedBy &&
                          Math.round( p.x ) === Math.round( newX ) &&
-                         Math.round( p.y ) === Math.round( newY )
+                         Math.round( p.y ) === Math.round( newY ) &&
+                         p.reward < dynamicRules.parcelMaxReward
                 );
-                if ( parcelOnTile ) await socket.emitPickup();
+                if ( parcelOnTile ){
+                    await socket.emitPickup();
+                } 
             }
 
             // await new Promise(res => setTimeout(res, 100));
