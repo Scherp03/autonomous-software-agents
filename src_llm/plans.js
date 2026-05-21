@@ -120,7 +120,7 @@ export class Explore extends PlanBase {
         const dirs = ['up', 'down', 'left', 'right'];
         const randomDir = dirs[Math.floor(Math.random() * dirs.length)];
         await socket.emitMove(randomDir);
-        // await new Promise(res => setTimeout(res, 100)); 
+        await new Promise(res => setTimeout(res, 100)); 
         
         return true;
     }
@@ -190,7 +190,7 @@ export class AStarMove extends PlanBase {
             const path = astar( { x: me.x, y: me.y }, { x: targetX, y: targetY } );
             
             if ( !path || path.length == 0 ) {
-                // await new Promise(res => setTimeout(res, 100)); 
+                await new Promise(res => setTimeout(res, 100)); 
                 throw [ 'no path to', targetX, targetY ]; 
             }
 
@@ -209,7 +209,7 @@ export class AStarMove extends PlanBase {
 
                 temporaryBlocks.set(`${blockX}_${blockY}`, Date.now() + 1000);
 
-                // await new Promise(res => setTimeout(res, 100));
+                await new Promise(res => setTimeout(res, 100));
                 continue;
             }
 
@@ -229,7 +229,7 @@ export class AStarMove extends PlanBase {
                 } 
             }
 
-            // await new Promise(res => setTimeout(res, 100));
+            await new Promise(res => setTimeout(res, 100));
         }
 
         return true;
@@ -239,16 +239,66 @@ export class AStarMove extends PlanBase {
 export class GoToBonus extends PlanBase {
     static isApplicableTo ( action ) { return action === 'go_to_bonus'; }
 
-    async execute ( action, x, y ) {
+    async execute ( action, x, y, id ) {
         if ( this.stopped ) throw [ 'stopped' ];
         await this.subIntention( [ 'go_to', x, y ] );
         
-        // Once reached, we can optionally clear the bonus from rules so we don't get stuck in a loop
-        dynamicRules.bonusTiles.delete(`${x}_${y}`);
+        // Clear the rule based on whether it was an edge or a specific tile
+        if (id && ['left', 'right', 'top', 'bottom'].includes(id)) {
+            dynamicRules.edgeRules.delete(id);
+        } else {
+            dynamicRules.bonusTiles.delete(`${x}_${y}`);
+        }
         return true;
     }
 }
 
+export class DropOnTile extends PlanBase {
+    static isApplicableTo ( action ) { return action === 'drop_on_tile'; }
+    
+    async execute ( action, x, y, id ) {
+        if ( this.stopped ) throw [ 'stopped' ];
+        await this.subIntention( [ 'go_to', x, y ] );
+        if ( this.stopped ) throw [ 'stopped' ];
+        await socket.emitPutdown();
+        
+        if (id && ['left', 'right', 'top', 'bottom'].includes(id)) {
+            dynamicRules.edgeRules.delete(id);
+        } else {
+            dynamicRules.bonusTiles.delete(`${x}_${y}`);
+        }
 
-// // Export the array so the BDI engine can iterate over available plans
-// export const planLibrary = [ GoPickUp, GoDeliver, AStarMove, Explore ];
+        for ( const [ parcelId, p ] of parcels ) {                  
+            if ( p.carriedBy === me.id ) parcels.delete( parcelId );
+        }
+        return true;
+    }
+}
+
+// export class GoToBonus extends PlanBase {
+//     static isApplicableTo ( action ) { return action === 'go_to_bonus'; }
+
+//     async execute ( action, x, y ) {
+//         if ( this.stopped ) throw [ 'stopped' ];
+//         await this.subIntention( [ 'go_to', x, y ] );
+        
+//         // Once reached, we can optionally clear the bonus from rules so we don't get stuck in a loop
+//         dynamicRules.bonusTiles.delete(`${x}_${y}`);
+//         return true;
+//     }
+// }
+
+// export class DropOnTile extends PlanBase {
+//     static isApplicableTo ( action ) { return action === 'drop_on_tile'; }
+//     async execute ( action, x, y ) {
+//         if ( this.stopped ) throw [ 'stopped' ];
+//         await this.subIntention( [ 'go_to', x, y ] );
+//         if ( this.stopped ) throw [ 'stopped' ];
+//         await socket.emitPutdown();
+//         dynamicRules.bonusTiles.delete(`${x}_${y}`);
+//         for ( const [ id, p ] of parcels ) {                  
+//             if ( p.carriedBy === me.id ) parcels.delete( id );
+//         }
+//         return true;
+//     }
+// }

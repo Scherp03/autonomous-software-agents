@@ -1,4 +1,4 @@
-import { mapBeliefs, temporaryBlocks, dynamicRules} from './beliefs.js';
+import { mapBeliefs, temporaryBlocks, dynamicRules, mapWidthxHeight } from './beliefs.js';
 
 const DIRS = [
     { dir: 'right', dx:  1, dy:  0, blockedBy: '←' },
@@ -10,10 +10,16 @@ const DIRS = [
 export function canEnter( nx, ny, blockedBy ) {
     const key = `${nx}_${ny}`;
 
-    // NEW: Check LLM forbidden tiles
+    // Check dynamic forbidden tiles first
     if ( dynamicRules.forbiddenTiles.has(key) ) {
         return false;
     }
+
+    // Process dynamic edge rules with negative implications
+    if ( dynamicRules.edgeRules.has('left') && dynamicRules.edgeRules.get('left').pts < 0 ) return false;
+    if ( dynamicRules.edgeRules.has('bottom') && dynamicRules.edgeRules.get('bottom').pts < 0 ) return false;
+    if ( dynamicRules.edgeRules.has('right') && dynamicRules.edgeRules.get('right').pts < 0  ) return false;
+    if ( dynamicRules.edgeRules.has('top') && dynamicRules.edgeRules.get('top').pts < 0 ) return false;
 
     if ( temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now() ) {
         return false;

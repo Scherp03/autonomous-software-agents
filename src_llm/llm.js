@@ -54,20 +54,48 @@ function set_parcel_filter(input) {
     return `Agent will now pick up parcels, but wait to deliver them until their reward decays to ${maxReward} or below.`;
 }
 
-function set_bonus_tile(input) {
-  const [x, y, pts] = input.split(',').map(s => Number(s.trim()));
-    const key = `${x}_${y}`;
+function set_location_rule(input) {
+    // Expected variations: 
+    // "4, 8, 10, true" or "4, 8, -20, false"
+    // "leftmost, 5, true" or "top, -10, false"
+    const parts = input.split(',');
+    let target = parts[0].trim().toLowerCase();
     
-    let message = `Bonus of ${pts}pts set for tile (${x},${y}).`;
+    // 1. Handle Keyword Maps (leftmost, rightmost, top, bottom)
+    if (['leftmost', 'rightmost', 'top', 'bottom'].includes(target)) {
+        const pts = Number(parts[1].trim());
+        // Parse the boolean (defaults to false/visit if not provided)
+        const mustDrop = parts[2] ? parts[2].trim().toLowerCase() === 'true' : false;
+        
+        const edgeMap = /** @type {Record<string, string>} */ ({ leftmost: 'left', rightmost: 'right', top: 'top', bottom: 'bottom' });
+        const edge = edgeMap[target];
+        
+        dynamicRules.edgeRules.set(edge, { pts, mustDrop });
+        return `Edge rule recorded: ${target} edge assigned ${pts}pts. Must drop package: ${mustDrop}.`;
+    } 
     
-    // Check if the tile is currently blacklisted
-    if (dynamicRules.forbiddenTiles.has(key)) {
-      dynamicRules.forbiddenTiles.delete(key); // Remove it from the blacklist
-      message += ` (Note: This tile was previously forbidden and has now been unblocked).`;
+    // 2. Handle Coordinate Calculations (x, y)
+    else {
+        const x = Number(parts[0].trim());
+        const y = Number(parts[1].trim());
+        const pts = Number(parts[2].trim());
+        const mustDrop = parts[3] ? parts[3].trim().toLowerCase() === 'true' : false;
+        const key = `${x}_${y}`;
+        
+        if (pts < 0) {
+            // Negative score turns tile into a forbidden obstacle
+            dynamicRules.forbiddenTiles.add(key);
+            dynamicRules.bonusTiles.delete(key);
+            return `Tile (${x},${y}) is now blacklisted due to negative feedback (${pts}pts).`;
+        } else {
+            // Unban check: If it was blacklisted previously, lift the ban
+            if (dynamicRules.forbiddenTiles.has(key)) {
+                dynamicRules.forbiddenTiles.delete(key);
+            }
+            dynamicRules.bonusTiles.set(key, { pts, mustDrop });
+            return `Reward profile established at (${x},${y}) for ${pts}pts. Must drop package: ${mustDrop}.`;
+        }
     }
-    
-    dynamicRules.bonusTiles.set(key, pts);
-  return message;
 }
 
 async function calculate(expression) {
@@ -127,6 +155,13 @@ async function get_current_time(location) {
   }
 }
 
+let genericAnwer = false;
+
+function genericResponse() {
+  genericAnwer = true;
+  return "The requested tool is not available. Answering with a generic response instead.";
+}
+
 const TOOLS = {
     calculate,
     get_current_time,
@@ -134,7 +169,8 @@ const TOOLS = {
     set_delivery_multiplier,
     set_stack_size,
     set_parcel_filter,
-    set_bonus_tile
+    set_location_rule,
+    genericResponse
 };
 // ==========================================
 // 4. Reusable LLM call
@@ -224,8 +260,8 @@ Available tools:
 - set_delivery_multiplier(params): multiplies the reward for delivering at a tile. Input format: "x, y, multiplier" (e.g., "4, 7, 5")
 - set_stack_size(params): requires the agent to carry exactly 'size' parcels to get a 'multiplier'. Input format: "size, multiplier" (e.g., "3, 2")
 - set_parcel_filter(maxReward): instructs the agent to wait to deliver and/or pick up parcels until their reward decays to maxReward or below. Input format: "maxReward" (e.g., "10")
-- set_bonus_tile(params): assigns a bonus of points for visiting a tile. Input format: "x, y, pts" (e.g., "4, 7, 10")
-
+- set_location_rule(params): Configures point allocations or route bans based on spatial regions or tiles. Input format: "target, pts, mustDrop" where target is a coordinate pair 'x, y' or edge terms ('leftmost', 'rightmost', 'top', 'bottom'), pts is an integer value, and mustDrop is a boolean (true if the agent must drop a package, false if it just needs to visit. If not specified, it defaults to false). (e.g., "0, 0, 10, true" or "leftmost, -10, false").
+- genericResponse(): if the user request cannot be fulfilled with the available tools, call this to return a generic response to the user without making any configuration changes.
 Rules:
 - Return ONLY valid JSON.
 - Do not use markdown.
@@ -235,6 +271,7 @@ Rules:
 - If the user uses math to define coordinates (e.g., "x=4*2"), include a step that uses calculate first.
 - If the user mentions a penalty for moving to a tile, use set_forbidden_tile.
 - Do NOT try to move the agent or check its position.
+- If the user asks for a tool that is not available, do not call any tool and return a step that says "The requested tool is not available."
 
 Return exactly this JSON shape:
 {
@@ -255,8 +292,9 @@ Available tools:
 - set_forbidden_tile(coordinates) -> format: "x, y"
 - set_delivery_multiplier(params) -> format: "x, y, multiplier"
 - set_stack_size(params) -> format: "size, multiplier"
-- set_parcel_filter(maxReward): instructs the agent to wait to deliver and/or pick up parcels until their reward decays to maxReward or below. Input format: "maxReward" (e.g., "10")
-- set_bonus_tile(params) -> format: "x, y, pts"
+- set_parcel_filter(maxReward) -> format: "maxReward"
+- set_location_rule(params) -> format: "target, pts, mustDrop" where target is a coordinate pair 'x, y' or edge terms ('leftmost', 'rightmost', 'top', 'bottom'), pts is an integer value, and mustDrop is a boolean (true to drop, false to visit).
+- genericResponse() -> no input, returns a generic fallback response to the user without making any configuration changes.
 
 You receive:
 - the original user request
@@ -303,6 +341,8 @@ If any step failed or could not be verified, say so explicitly.
 // ==========================================
 // 7. Conversation memory
 // ==========================================
+
+const MAX_HISTORY = 20;
 
 // Global memory stores only the visible conversation.
 // It does not store internal actions, observations, or plans.
@@ -537,6 +577,12 @@ async function runAgentTurn(userInput) {
 
   console.log(`Assistant: ${finalAnswer}\n`);
 
+  if (genericAnwer) {
+    console.log("[Note: the assistant returned a generic response, likely because the user's request could not be fulfilled with the available tools.]\n");
+    await socket.emitAsk( ADMIN_ID , finalAnswer );
+    genericAnwer = false;
+  }
+
   // 4. Store only visible conversation
   messages.push({
     role: "user",
@@ -547,6 +593,15 @@ async function runAgentTurn(userInput) {
     role: "assistant",
     content: finalAnswer,
   });
+
+  // Sliding Window Memory Pruning
+  if (messages.length > MAX_HISTORY + 1) {
+    const excess = messages.length - (MAX_HISTORY + 1);
+    // splice(start_index, delete_count)
+    // We start at index 1 to protect the system prompt!
+    messages.splice(1, excess);
+    console.log(`[Memory] Auto-pruned the ${excess} oldest messages to prevent context overflow.`);
+  }
   
 }
 
@@ -588,15 +643,6 @@ socket.onMsg(async (id, name, msg) => {
   }
 
   await runAgentTurn(msg);
-
-  // try {
-  //     console.log("➡️ Sending prompt to LLM...");
-  //     await runAgentTurn(msg);
-  // } catch (error) {
-  //     console.error("\n❌ CRITICAL LLM ERROR ❌");
-  //     console.error(error.message || error);
-  //     console.log("Check if LM Studio / LiteLLM is running and the model is loaded.\n");
-  // }
 
   console.log(`Visible memory contains ${messages.length} messages.\n`);
 });

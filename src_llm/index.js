@@ -2,7 +2,7 @@ import { socket } from './socket.js';
 import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, dynamicRules, mapWidthxHeight, CAPACITY } from './beliefs.js';
 import { distance } from './utils.js';
 import { IntentionRevisionRevise } from './agent.js';
-import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary, GoToBonus } from './plans.js';
+import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary, GoToBonus, DropOnTile } from './plans.js';
 
 import './llm.js'; // This will start the chat listener alongside the BDI loop
 
@@ -36,11 +36,26 @@ socket.onYou( ( {id, name, x, y, score} ) => {
     me.score = score;
 
     // consume bonus tiles the moment we step on them
-    const currentTileKey = `${me.x}_${me.y}`;
+    const key = `${me.x}_${me.y}`;
+    // Clear edge visit configurations
+    const borders = [];
+    const cx = Math.round(me.x);
+    const cy = Math.round(me.y);
     
-    if (dynamicRules.bonusTiles.has(currentTileKey)) {
-        dynamicRules.bonusTiles.delete(currentTileKey);
-        console.log(`[Bonus] Walked through bonus tile ${currentTileKey}! Bonus cleared.`);
+    if (dynamicRules.bonusTiles.has(key) && !dynamicRules.bonusTiles.get(key).mustDrop) {
+        dynamicRules.bonusTiles.delete(key);
+        console.log(`[Bonus] Walked through bonus tile ${key}! Bonus cleared.`);
+    }
+
+    if (cx == 0) borders.push('left');
+    if (cx == mapWidthxHeight.x) borders.push('right');
+    if (cy == 0) borders.push('bottom');
+    if (cy == mapWidthxHeight.y) borders.push('top');
+
+    for (const b of borders) {
+        if (dynamicRules.edgeRules.has(b) && !dynamicRules.edgeRules.get(b).mustDrop) {
+            dynamicRules.edgeRules.delete(b);
+        }
     }
 } );
 
@@ -85,8 +100,8 @@ function recomputeSpawnWeights() {
 
 socket.onMap( (width, height, tile) => {
     const tiles = Array.isArray(tile) ? tile : (tile || []);
-    mapWidthxHeight.x = width;
-    mapWidthxHeight.y = height;
+    mapWidthxHeight.x = width - 4;
+    mapWidthxHeight.y = height - 4;
     for ( const tile of tiles ) {
         mapBeliefs.set( `${tile.x}_${tile.y}`, tile );
         updateTileBelief( tile.x, tile.y, tile.type );
@@ -121,10 +136,65 @@ export function optionsGeneration () {
         !p.carriedBy && p.reward > gameConfig.GAME.parcels.reward_variance
     );
 
-    // NEW: Generate options for bonus tiles
-    for (const [key, pts] of dynamicRules.bonusTiles.entries()) {
-        const [x, y] = key.split('_').map(Number);
-        myAgent.push(['go_to_bonus', x, y]);
+    // // NEW: Generate options for bonus tiles
+    // for (const [key, pts] of dynamicRules.bonusTiles.entries()) {
+    //     const [x, y] = key.split('_').map(Number);
+    //     myAgent.push(['go_to_bonus', x, y]);
+    // }
+
+    // Generate individual tile tasks
+    for (const [key, rule] of dynamicRules.bonusTiles.entries()) {
+        const [bx, by] = key.split('_').map(Number);
+
+        const tile = mapBeliefs.get(`${bx}_${by}`);
+        if (!tile || tile.type === '0') {
+            console.log(`[Warning] Tile ${bx},${by} is a wall. Deleting impossible rule.`);
+            dynamicRules.bonusTiles.delete(key);
+            continue;
+        }
+
+        if (rule.mustDrop && carried.length > 0) {
+            myAgent.push(['drop_on_tile', bx, by]);
+        } else if (!rule.mustDrop) {
+            myAgent.push(['go_to_bonus', bx, by]);
+        }
+    }
+
+    // Generate border tasks
+    for (const [edge, rule] of dynamicRules.edgeRules.entries()) {
+        if (rule.pts > 0) {
+            
+            // Find all walkable tiles on this specific edge
+            const walkableEdgeTiles = Array.from(mapBeliefs.values()).filter(t => {
+                if (t.type == '0') return false; // Skip unwalkable walls
+                if (edge == 'left' && t.x == 0) return true;
+                if (edge == 'right' && t.x == (mapWidthxHeight.x - 1)) return true;
+                if (edge == 'bottom' && t.y == 0) return true;
+                if (edge == 'top' && t.y == (mapWidthxHeight.y - 1)) return true;
+                return false;
+            });
+
+            // If there's at least one walkable tile, pick one randomly and push the intention
+            if (walkableEdgeTiles.length > 0) {
+               // const target = walkableEdgeTiles[0]
+
+                let target = {x:me.x, y:me.y};
+
+                if (walkableEdgeTiles.length > 0) {
+                    target = walkableEdgeTiles.reduce((best, t) => {
+                        const d = distance(me, t);
+                        return d < best.d ? { t, d } : best;
+                    }, { t: null, d: Infinity }).t;
+                }
+
+                // Pass the 'edge' name as the 4th argument (id)
+                if (rule.mustDrop && carried.length > 0) {
+                    myAgent.push(['drop_on_tile', target.x, target.y, edge]);
+                } else if (!rule.mustDrop) {
+                    myAgent.push(['go_to_bonus', target.x, target.y, edge]);
+                }
+            }
+        }
     }
 
     // Propose delivery to the nearest tile if carrying anything
@@ -168,6 +238,8 @@ const myAgent = new IntentionRevisionRevise();
 myAgent.loop();
 
 planLibrary.push( GoToBonus );
+// planLibrary.push( GoToEdgeBonus );
+planLibrary.push( DropOnTile );
 planLibrary.push( GoPickUp );
 planLibrary.push( GoDeliver );
 planLibrary.push( AStarMove );

@@ -14,7 +14,7 @@ export class IntentionRevision {
             if ( this.intention_queue.length > 0 ) {
                 const intention = this.intention_queue[0];
 
-                // console.log( 'intentionRevision.loop', this.intention_queue.map(i=>i.predicate) );
+                console.log( 'intentionRevision.loop', this.intention_queue.map(i=>i.predicate) );
                 // Execution wrapped safely. 
                 // Plans should validate their own targets before/during execution.
                 try {
@@ -58,13 +58,21 @@ export class IntentionRevisionRevise extends IntentionRevision {
         const decayIntervalMs = parseMs( gameConfig.GAME.parcels.decaying_event );
         const decayPerStep    = gameConfig.CLOCK / decayIntervalMs;
 
-        // NEW ACTION: Go to a bonus tile requested by the LLM
         if ( action === 'go_to_bonus' ) {
-            const pts = dynamicRules.bonusTiles.get(`${x}_${y}`) || 0;
-            if (pts <= 0) return -1; // Ignore negative or zero bonuses
-            const dist = distance( me, { x, y } );
-            return pts - (dist * decayPerStep);
+            // If 'id' is passed, it's an edge rule. Otherwise, check specific tiles.
+            const rule = dynamicRules.edgeRules.get(id) || dynamicRules.bonusTiles.get(`${x}_${y}`);
+            if (!rule || rule.pts <= 0) return -1;
+            return rule.pts - (distance(me, { x, y }) * decayPerStep);
         }
+
+        if ( action === 'drop_on_tile' ) {
+            const rule = dynamicRules.edgeRules.get(id) || dynamicRules.bonusTiles.get(`${x}_${y}`);
+            if (!rule || rule.pts <= 0) return -1;
+            const carried = Array.from(parcels.values()).filter(p => p.carriedBy === me.id);
+            if (carried.length === 0) return -1;
+            return (rule.pts * carried.length) - (distance(me, { x, y }) * decayPerStep);
+        }
+
 
         if ( action === 'go_deliver' ) {
             const carried = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id );
@@ -158,9 +166,11 @@ export class IntentionRevisionRevise extends IntentionRevision {
             return; 
         }
 
+        const action = predicate[0];
+
         // At most one go_deliver allowed in the queue at a time.
         // If one already exists with the same destination, skip; otherwise replace it.
-        if ( predicate[0] === 'go_deliver' ) {
+        if ( action === 'go_deliver' ) {
             const existingIdx = this.intention_queue.findIndex( i => i.predicate[0] === 'go_deliver' );
             if ( existingIdx !== -1 ) {
                 const existing = this.intention_queue[ existingIdx ];
@@ -168,7 +178,22 @@ export class IntentionRevisionRevise extends IntentionRevision {
                 existing.stop();
                 this.intention_queue.splice( existingIdx, 1 );
             }
-        } else {
+        } 
+        // At most one edge objective allowed per edge at a time.
+        else if ( (action === 'go_to_bonus' || action === 'drop_on_tile') && predicate[3] ) {
+            const edgeId = predicate[3]; // 'left', 'right', 'top', 'bottom'
+            const existingIdx = this.intention_queue.findIndex( i => i.predicate[0] === action && i.predicate[3] === edgeId );
+            
+            if ( existingIdx !== -1 ) {
+                const existing = this.intention_queue[ existingIdx ];
+                // If it's the exact same coordinate, skip it
+                if ( existing.predicate.join(' ') === predicate.join(' ') ) return;
+                // Otherwise, the closest tile has changed. Stop the old one and replace it.
+                existing.stop();
+                this.intention_queue.splice( existingIdx, 1 );
+            }
+        }
+        else {
             // For all other actions, skip exact duplicates
             const isDuplicate = this.intention_queue.some(
                 i => i.predicate.join(' ') === predicate.join(' ')

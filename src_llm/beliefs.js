@@ -83,6 +83,8 @@ export const dynamicRules = {
     deliveryMultipliers: new Map(),    // Map "x_y" -> multiplier
     stackSizeRule: null,               // { size: number, multiplier: number }
     parcelMaxReward: Infinity,         // Max score threshold
+    bonusTiles: new Map(),             // Map "x_y" -> { pts: number, mustDrop: boolean }
+    edgeRules: new Map()               // Map "left"|"right"|"top"|"bottom" -> { pts: number, mustDrop: boolean }
 };
 
 export const CAPACITY = 10;
