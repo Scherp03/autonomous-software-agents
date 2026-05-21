@@ -1,6 +1,6 @@
 import "dotenv/config";
 import OpenAI from "openai";
-import { dynamicRules } from "./beliefs.js";
+import { ADMIN_ID, ADMIN_NAME, dynamicRules } from "./beliefs.js";
 import { socket } from "./socket.js";
 // import me from "./beliefs.js";
 
@@ -42,7 +42,7 @@ function set_delivery_multiplier(input) {
     return `Delivery multiplier at (${x},${y}) set to ${multiplier}x.`;
 }
 
-function set_stack_size_rule(input) {
+function set_stack_size(input) {
     const [size, multiplier] = input.split(',').map(s => Number(s.trim()));
     dynamicRules.stackSizeRule = { size, multiplier };
     return `Stack rule applied: Stacks of exactly ${size} get a ${multiplier}x multiplier.`;
@@ -70,12 +70,58 @@ function set_bonus_tile(input) {
   return message;
 }
 
-function calculate(expression) {
+async function calculate(expression) {
   console.log("---- CALCULATE ----");
 
   try {
     // Demo only: eval is unsafe for production
+      await socket.emitAsk( ADMIN_ID , String(eval(expression)) );
+
     return String(eval(expression));
+  } catch (error) {
+    return `Error: ${error.message}`;
+  }
+}
+
+async function get_current_time(location) {
+  console.log("---- GET CURRENT TIME ----");
+
+  try {
+    const normalized = location.trim().toLowerCase();
+
+    const supportedLocations = {
+      rome: { city: "Rome", timeZone: "Europe/Rome" },
+      roma: { city: "Rome", timeZone: "Europe/Rome" },
+    };
+
+    const config = supportedLocations[normalized];
+
+    if (!config) {
+      return "Error: Current time is only supported for Rome/Roma in this demo.";
+    }
+
+    const now = new Date();
+
+    const formatter = new Intl.DateTimeFormat("en-GB", {
+      timeZone: config.timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+
+    const parts = formatter.formatToParts(now);
+    const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+
+    const formattedDate = `${map.year}-${map.month}-${map.day}`;
+    const formattedTime = `${map.hour}:${map.minute}:${map.second}`;
+
+    await socket.emitAsk( ADMIN_ID , `The current local time in ${config.city} is ${formattedDate} ${formattedTime} (${config.timeZone}).` );
+
+    return `The current local time in ${config.city} is ${formattedDate} ${formattedTime} (${config.timeZone}).`;
   } catch (error) {
     return `Error: ${error.message}`;
   }
@@ -83,9 +129,10 @@ function calculate(expression) {
 
 const TOOLS = {
     calculate,
+    get_current_time,
     set_forbidden_tile,
     set_delivery_multiplier,
-    set_stack_size_rule,
+    set_stack_size,
     set_parcel_filter,
     set_bonus_tile
 };
@@ -175,8 +222,8 @@ Available tools:
 - get_current_time(location): returns the current local time for Rome/Roma
 - set_forbidden_tile(coordinates): prevents the agent from entering a tile. Input format: "x, y" (e.g., "4, 7")
 - set_delivery_multiplier(params): multiplies the reward for delivering at a tile. Input format: "x, y, multiplier" (e.g., "4, 7, 5")
-- set_stack_size_rule(params): requires the agent to carry exactly 'size' parcels to get a 'multiplier'. Input format: "size, multiplier" (e.g., "3, 2")
-- set_parcel_filter(maxReward): instructs the agent to wait to deliver parcels until their reward decays to maxReward or below. Input format: "maxReward" (e.g., "10")
+- set_stack_size(params): requires the agent to carry exactly 'size' parcels to get a 'multiplier'. Input format: "size, multiplier" (e.g., "3, 2")
+- set_parcel_filter(maxReward): instructs the agent to wait to deliver and/or pick up parcels until their reward decays to maxReward or below. Input format: "maxReward" (e.g., "10")
 - set_bonus_tile(params): assigns a bonus of points for visiting a tile. Input format: "x, y, pts" (e.g., "4, 7, 10")
 
 Rules:
@@ -207,8 +254,8 @@ Available tools:
 - get_current_time(location)
 - set_forbidden_tile(coordinates) -> format: "x, y"
 - set_delivery_multiplier(params) -> format: "x, y, multiplier"
-- set_stack_size_rule(params) -> format: "size, multiplier"
-- set_parcel_filter(maxReward): instructs the agent to wait to deliver parcels until their reward decays to maxReward or below. Input format: "maxReward" (e.g., "10")
+- set_stack_size(params) -> format: "size, multiplier"
+- set_parcel_filter(maxReward): instructs the agent to wait to deliver and/or pick up parcels until their reward decays to maxReward or below. Input format: "maxReward" (e.g., "10")
 - set_bonus_tile(params) -> format: "x, y, pts"
 
 You receive:
@@ -514,8 +561,7 @@ console.log("Only accepting commands from player id: 'admin'.\n");
 socket.onMsg(async (id, name, msg) => {
   // Security check: Ignore all messages unless the ID is exactly 'admin'
 
-  // if (id != "####" && name.toLowerCase() != "admin") {
-  // if (id != "4c3c93" && name.toLowerCase() != "J0K3R") {
+  // if (id != ADMIN_ID && name.toLowerCase() != ADMIN_NAME) {
   //   console.log(`[Blocked] Ignored message from ${name} (${id}): ${msg}`);
   //   return; 
   // }
@@ -542,6 +588,15 @@ socket.onMsg(async (id, name, msg) => {
   }
 
   await runAgentTurn(msg);
+
+  // try {
+  //     console.log("➡️ Sending prompt to LLM...");
+  //     await runAgentTurn(msg);
+  // } catch (error) {
+  //     console.error("\n❌ CRITICAL LLM ERROR ❌");
+  //     console.error(error.message || error);
+  //     console.log("Check if LM Studio / LiteLLM is running and the model is loaded.\n");
+  // }
 
   console.log(`Visible memory contains ${messages.length} messages.\n`);
 });

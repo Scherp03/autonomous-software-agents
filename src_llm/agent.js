@@ -78,22 +78,24 @@ export class IntentionRevisionRevise extends IntentionRevision {
             // sum of utilities of all parcels being delivered, where utility of each parcel is max(0, reward - decayPerStep * dist)
             let partialUtility = carried.reduce( (sum, p) => sum + Math.max(0, p.reward - dist * decayPerStep), 0 );
 
-            // NEW: Apply Stack Size Rule
+            // Apply Stack Size Rule
             if (dynamicRules.stackSizeRule) {
-                if (carried.length == dynamicRules.stackSizeRule.size) {
-                    partialUtility *= dynamicRules.stackSizeRule.multiplier;
+
+                const size = dynamicRules.stackSizeRule.size;
+                const multiplier = dynamicRules.stackSizeRule.multiplier;
+                
+                if (multiplier >= 1) {
+                    if (carried.length == size) {
+                        partialUtility *= multiplier; // Apply positive multiplier for exact stack size
+                    } else if (carried.length < size) {
+                        return -1; // Too few parcels: reject delivery
+                    } // Too many parcels: no multiplier, but still valid
                 } else {
-                    // Penalize delivery if not matching exact stack requirement
-                    if (dynamicRules.stackSizeRule.multiplier > 1) {
-                         // Soft penalty: just wait to deliver if we need more
-                         return -1; 
-                    } else {
-                         // Hard penalty: apply the fractional multiplier (e.g. 0.3)
-                         partialUtility *= dynamicRules.stackSizeRule.multiplier;
+                    if (carried.length == size) {
+                        partialUtility *= multiplier;
                     }
                 }
             }
-
             // NEW: Apply Delivery Multiplier
             const key = `${x}_${y}`;
             if (dynamicRules.deliveryMultipliers.has(key)) {
@@ -112,6 +114,10 @@ export class IntentionRevisionRevise extends IntentionRevision {
             if ( parcel.reward > dynamicRules.parcelMaxReward ) return -1;
 
             const carried = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id );
+
+            if (dynamicRules.stackSizeRule) {
+                if ( carried.length >= dynamicRules.stackSizeRule.size ) return -1;
+            }
 
             // Nearest delivery tile from the pickup spot (Manhattan)
             const nearestDel = deliveryTiles.reduce( (best, t) => {

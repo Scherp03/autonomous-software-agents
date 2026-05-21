@@ -127,21 +127,11 @@ export function optionsGeneration () {
         myAgent.push(['go_to_bonus', x, y]);
     }
 
-    // // Propose delivery to the nearest tile if carrying anything
-    // if ( carried.length > 0 && deliveryTiles.length > 0 ) {
-    //     const nearestDelivery = deliveryTiles.reduce( (best, t) => {
-    //         const d = distance( me, t );
-    //         return d < best.d ? { t, d } : best;
-    //     }, { t: null, d: Infinity } ).t;
-    //     if ( nearestDelivery ) {
-    //         myAgent.push( [ 'go_deliver', nearestDelivery.x, nearestDelivery.y ] );
-    //     }
-    // }
-
-    // Propose delivery...
-    // IMPORTANT: If stack size rule is active, delay delivery until we meet the stack requirement
+    // Propose delivery to the nearest tile if carrying anything
     if ( carried.length > 0 && deliveryTiles.length > 0 ) {
-        if (!dynamicRules.stackSizeRule || carried.length == dynamicRules.stackSizeRule.size) {
+        // Only delay delivery proposals if we are building a BONUS stack
+        const isBonus = dynamicRules.stackSizeRule && dynamicRules.stackSizeRule.multiplier > 1;
+        if (!isBonus || carried.length >= dynamicRules.stackSizeRule.size ) {
             const nearestDelivery = deliveryTiles.reduce( (best, t) => {
                 const d = distance( me, t );
                 return d < best.d ? { t, d } : best;

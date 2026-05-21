@@ -83,7 +83,11 @@ export const dynamicRules = {
     deliveryMultipliers: new Map(),    // Map "x_y" -> multiplier
     stackSizeRule: null,               // { size: number, multiplier: number }
     parcelMaxReward: Infinity,         // Max score threshold
-    bonusTiles: new Map(),             // Map "x_y" -> bonus points
 };
 
-export const CAPACITY = gameConfig.GAME.player.capacity;
+export const CAPACITY = 10;
+
+export const ADMIN_ID = '715c7f';  
+export const ADMIN_NAME = 'admin'; 
+// export const ADMIN_ID = "4c3c93"
+// export const ADMIN_NAME = "J0K3R"
