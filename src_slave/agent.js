@@ -125,6 +125,8 @@ export class IntentionRevisionRevise extends IntentionRevision {
             return revisedUtility;
         }
 
+        if ( action === 'go_to_neighborhood' ) return predicate[2] ?? 500;
+
         if ( action === 'explore' ) return 0;
 
         return -1;
@@ -189,6 +191,21 @@ export class IntentionRevisionRevise extends IntentionRevision {
                 this.intention_queue.splice( i, 1 );
             }
         }
+    }
+
+    // Bypass utility scoring: stop whatever is running and insert predicate at the front.
+    pushUrgent ( predicate ) {
+        if ( this.intention_queue.length > 0 ) {
+            this.intention_queue[ 0 ].stop();
+            this.intention_queue.splice( 0, 1 );
+        }
+        for ( let i = this.intention_queue.length - 1; i >= 0; i-- ) {
+            if ( this.intention_queue[ i ].predicate[ 0 ] === 'go_to_neighborhood' ) {
+                this.intention_queue[ i ].stop();
+                this.intention_queue.splice( i, 1 );
+            }
+        }
+        this.intention_queue.unshift( new IntentionDeliberation( this, predicate ) );
     }
 }
 

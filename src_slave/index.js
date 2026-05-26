@@ -1,9 +1,11 @@
+import { writeFileSync } from 'fs';
 import { socket } from './socket.js';
 import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, mapWidthxHeight, CAPACITY, dynamicRules } from './beliefs.js';
 import { distance } from './utils.js';
 import { IntentionRevisionRevise } from './agent.js';
-import { GoPickUp, GoDeliver, AStarMove, Explore, GoToBonus, DropOnTile, planLibrary } from './plans.js';
+import { GoPickUp, GoDeliver, AStarMove, Explore, GoToBonus, DropOnTile, GoToNeighborhood, planLibrary } from './plans.js';
 import './config-sync.js';
+import { setAgent, SLAVE_STATUS_PATH } from './slave-command.js';
 
 // ─── Belief Revision (Socket Listeners) ──────────────────────────────────────
 socket.onConfig( config => {
@@ -190,8 +192,12 @@ socket.onYou( optionsGeneration );
 // const myAgent = new IntentionRevisionReplace();
 const myAgent = new IntentionRevisionRevise();
 
+setAgent( myAgent );
+writeFileSync( SLAVE_STATUS_PATH, JSON.stringify( { arrived: false }, null, 2 ) );
+
 myAgent.loop();
 
+planLibrary.push( GoToNeighborhood );
 planLibrary.push( GoToBonus );
 planLibrary.push( DropOnTile );
 planLibrary.push( GoPickUp );

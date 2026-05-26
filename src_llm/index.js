@@ -2,9 +2,9 @@ import { socket } from './socket.js';
 import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, dynamicRules, mapWidthxHeight, CAPACITY } from './beliefs.js';
 import { distance } from './utils.js';
 import { IntentionRevisionRevise } from './agent.js';
-import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary, GoToBonus, DropOnTile } from './plans.js';
+import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary, GoToBonus, DropOnTile, GoToNeighborhood } from './plans.js';
 
-import './llm.js'; // This will start the chat listener alongside the BDI loop
+import { setSelfAgent } from './llm.js';
 
 // ─── Belief Revision (Socket Listeners) ──────────────────────────────────────
 socket.onConfig( config => {
@@ -235,10 +235,12 @@ socket.onYou( optionsGeneration );
 // const myAgent = new IntentionRevisionReplace();
 const myAgent = new IntentionRevisionRevise();
 
+setSelfAgent( myAgent );
+
 myAgent.loop();
 
+planLibrary.push( GoToNeighborhood );
 planLibrary.push( GoToBonus );
-// planLibrary.push( GoToEdgeBonus );
 planLibrary.push( DropOnTile );
 planLibrary.push( GoPickUp );
 planLibrary.push( GoDeliver );

@@ -3,11 +3,16 @@ import OpenAI from "openai";
 import { writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { ADMIN_ID, ADMIN_NAME, dynamicRules } from "./beliefs.js";
+import { ADMIN_ID, ADMIN_NAME, dynamicRules, mapBeliefs } from "./beliefs.js";
 import { socket } from "./socket.js";
 
 const __dir = dirname( fileURLToPath( import.meta.url ) );
 const SHARED_CONFIG_PATH = join( __dir, '..', 'shared-config.json' );
+const SLAVE_COMMAND_PATH = join( __dir, '..', 'slave-command.json' );
+const SLAVE_STATUS_PATH = join( __dir, '..', 'slave-status.json' );
+
+let selfAgentRef = null;
+export function setSelfAgent ( agent ) { selfAgentRef = agent; }
 
 function writeSharedConfig () {
     const snapshot = {
@@ -116,6 +121,43 @@ function set_location_rule(input) {
     }
 }
 
+function set_neighborhood_mission(input) {
+    // Input: "cx, cy, radius, pts" — e.g. "5, 5, 3, 500"
+    const parts = input.split(',').map(s => Number(s.trim()));
+    const [ cx, cy, radius, pts = 500 ] = parts;
+
+    if ( isNaN(cx) || isNaN(cy) || isNaN(radius) ) {
+        return `Error: invalid input. Expected "cx, cy, radius" or "cx, cy, radius, pts".`;
+    }
+
+    // Collect walkable tiles within Manhattan distance radius from center
+    const tiles = [];
+    for ( let dx = -radius; dx <= radius; dx++ ) {
+        for ( let dy = -radius; dy <= radius; dy++ ) {
+            if ( Math.abs(dx) + Math.abs(dy) > radius ) continue;
+            const nx = Math.round(cx) + dx;
+            const ny = Math.round(cy) + dy;
+            const tile = mapBeliefs.get( `${nx}_${ny}` );
+            if ( tile && tile.type !== '0' ) tiles.push( { x: nx, y: ny } );
+        }
+    }
+
+    if ( tiles.length === 0 ) {
+        return `No walkable tiles found in neighborhood around (${cx},${cy}) with radius ${radius}. Has the map been loaded yet?`;
+    }
+
+    const effectivePts = isNaN(pts) ? 500 : pts;
+
+    // Send command to slave agent via file
+    writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'GO_TO_NEIGHBORHOOD', tiles, pts: effectivePts }, null, 2 ) );
+
+    // Push to self (LLM) agent
+    if ( selfAgentRef ) selfAgentRef.push( [ 'go_to_neighborhood', tiles, effectivePts ] );
+
+    console.log( `[neighborhood] Mission started: ${tiles.length} tiles around (${cx},${cy}), pts=${effectivePts}` );
+    return `Neighborhood mission started: ${tiles.length} walkable tiles around (${cx},${cy}) with radius ${radius}, pts=${effectivePts}.`;
+}
+
 async function calculate(expression) {
   console.log("---- CALCULATE ----");
 
@@ -189,6 +231,7 @@ const TOOLS = {
     set_stack_size,
     set_parcel_filter,
     set_location_rule,
+    set_neighborhood_mission,
     genericResponse
 };
 // ==========================================
@@ -283,6 +326,7 @@ Available tools:
 - set_stack_size(params): requires the agent to carry exactly 'size' parcels to get a 'multiplier'. Input format: "size, multiplier" (e.g., "3, 2")
 - set_parcel_filter(maxReward): instructs the agent to wait to deliver and/or pick up parcels until their reward decays to maxReward or below. Input format: "maxReward" (e.g., "10")
 - set_location_rule(params): Configures point allocations or route bans based on spatial regions or tiles. Input format: "target, pts, mustDrop" where target is a coordinate pair 'x, y' or edge terms ('leftmost', 'rightmost', 'top', 'bottom'), pts is an integer value, and mustDrop is a boolean (true if the agent must drop a package, false if it just needs to visit. If not specified, it defaults to false). (e.g., "0, 0, 10, true" or "leftmost, -10, false").
+- set_neighborhood_mission(params): Sends BOTH agents to a neighborhood (area around a map position). Both agents independently navigate to the nearest free tile within the area and wait for each other before resuming. Input format: "cx, cy, radius, pts" where cx/cy is the center coordinate, radius is the Manhattan distance radius, and pts is the bonus points (default 500). (e.g., "5, 5, 3, 500").
 - genericResponse(): if the user request cannot be fulfilled with the available tools, call this to return a generic response to the user without making any configuration changes.
 Rules:
 - Return ONLY valid JSON.
@@ -316,6 +360,7 @@ Available tools:
 - set_stack_size(params) -> format: "size, multiplier"
 - set_parcel_filter(maxReward) -> format: "maxReward"
 - set_location_rule(params) -> format: "target, pts, mustDrop" where target is a coordinate pair 'x, y' or edge terms ('leftmost', 'rightmost', 'top', 'bottom'), pts is an integer value, and mustDrop is a boolean (true to drop, false to visit).
+- set_neighborhood_mission(params) -> format: "cx, cy, radius, pts" — sends both agents to the area around (cx,cy) within Manhattan radius. Both wait for each other then resume.
 - genericResponse() -> no input, returns a generic fallback response to the user without making any configuration changes.
 
 You receive:
@@ -639,8 +684,10 @@ console.log("Planner + Executor Agent started.");
 console.log("Listening to DeliverooJS chat...");
 console.log("Only accepting commands from player id: 'admin'.\n");
 
-// Reset shared config so BDI starts from the same clean state
+// Reset all shared files so both agents start from a clean state
 writeSharedConfig();
+writeFileSync( SLAVE_STATUS_PATH,  JSON.stringify( { arrived: false }, null, 2 ) );
+writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( {} ) );
 
 socket.onMsg(async (id, name, msg) => {
   // Security check: Ignore all messages unless the ID is exactly 'admin'

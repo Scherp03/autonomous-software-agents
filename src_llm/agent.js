@@ -148,6 +148,8 @@ export class IntentionRevisionRevise extends IntentionRevision {
             return revisedUtility;
         }
 
+        if ( action === 'go_to_neighborhood' ) return predicate[2] ?? 500;
+
         if ( action === 'explore' ) return 0;
 
         return -1;

@@ -1,8 +1,15 @@
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { socket } from './socket.js';
-import { me, mapBeliefs, spawnTiles, spawnWeights, parcels, gameConfig, temporaryBlocks, CAPACITY, dynamicRules } from './beliefs.js';
+import { me, mapBeliefs, spawnTiles, spawnWeights, agents, parcels, gameConfig, temporaryBlocks, CAPACITY, dynamicRules } from './beliefs.js';
 import { distance, weightedRandom } from './utils.js';
 import { astar } from './pathfinding.js';
 import { IntentionDeliberation } from './agent.js';
+
+const __dir = dirname( fileURLToPath( import.meta.url ) );
+const SLAVE_STATUS_PATH  = join( __dir, '..', 'slave-status.json' );
+const SLAVE_COMMAND_PATH = join( __dir, '..', 'slave-command.json' );
 
 /**
  * @typedef { {
@@ -255,22 +262,72 @@ export class GoToBonus extends PlanBase {
 
 export class DropOnTile extends PlanBase {
     static isApplicableTo ( action ) { return action === 'drop_on_tile'; }
-    
+
     async execute ( action, x, y, id ) {
         if ( this.stopped ) throw [ 'stopped' ];
         await this.subIntention( [ 'go_to', x, y ] );
         if ( this.stopped ) throw [ 'stopped' ];
         await socket.emitPutdown();
-        
+
         if (id && ['left', 'right', 'top', 'bottom'].includes(id)) {
             dynamicRules.edgeRules.delete(id);
         } else {
             dynamicRules.bonusTiles.delete(`${x}_${y}`);
         }
 
-        for ( const [ parcelId, p ] of parcels ) {                  
+        for ( const [ parcelId, p ] of parcels ) {
             if ( p.carriedBy === me.id ) parcels.delete( parcelId );
         }
+        return true;
+    }
+}
+
+export class GoToNeighborhood extends PlanBase {
+    static isApplicableTo ( action ) { return action === 'go_to_neighborhood'; }
+
+    async execute ( action, tiles, pts ) {
+        if ( this.stopped ) throw [ 'stopped' ];
+
+        // Avoid tiles currently occupied by visible agents, then sort by distance
+        const occupiedKeys = new Set( Array.from( agents.values() ).map( a => `${Math.round(a.x)}_${Math.round(a.y)}` ) );
+        const sorted = [ ...tiles ]
+            .filter( t => !occupiedKeys.has( `${t.x}_${t.y}` ) )
+            .sort( (a, b) => distance( me, a ) - distance( me, b ) );
+
+        if ( sorted.length === 0 ) throw [ 'go_to_neighborhood: no available tiles' ];
+
+        let arrived = false;
+        for ( const target of sorted ) {
+            if ( this.stopped ) throw [ 'stopped' ];
+            try {
+                await this.subIntention( [ 'go_to', target.x, target.y ] );
+                arrived = true;
+                break;
+            } catch ( err ) {
+                this.log( 'go_to_neighborhood: failed to reach', target, '- trying next' );
+            }
+        }
+
+        if ( !arrived ) throw [ 'go_to_neighborhood: could not reach any tile' ];
+
+        console.log( `[llm] Arrived at neighborhood (${me.x},${me.y}), waiting for slave...` );
+
+        // Poll slave-status.json until arrived: true or 60 s timeout
+        const deadline = Date.now() + 60000;
+        while ( Date.now() < deadline ) {
+            if ( this.stopped ) throw [ 'stopped' ];
+            try {
+                if ( existsSync( SLAVE_STATUS_PATH ) ) {
+                    const status = JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) );
+                    if ( status.arrived ) break;
+                }
+            } catch ( _ ) {}
+            await new Promise( r => setTimeout( r, 200 ) );
+        }
+
+        // Signal slave to resume
+        writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'RESUME' } ) );
+        console.log( '[llm] Both in neighborhood — RESUME sent to slave.' );
         return true;
     }
 }

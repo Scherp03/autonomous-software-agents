@@ -1,8 +1,10 @@
+import { writeFileSync } from 'fs';
 import { socket } from './socket.js';
-import { me, mapBeliefs, spawnTiles, spawnWeights, parcels, gameConfig, temporaryBlocks, dynamicRules } from './beliefs.js';
+import { me, mapBeliefs, spawnTiles, spawnWeights, agents, parcels, gameConfig, temporaryBlocks, dynamicRules } from './beliefs.js';
 import { distance, weightedRandom } from './utils.js';
 import { astar } from './pathfinding.js';
 import { IntentionDeliberation } from './agent.js';
+import { SLAVE_STATUS_PATH, waitForResume } from './slave-command.js';
 
 /**
  * @typedef { {
@@ -263,6 +265,43 @@ export class DropOnTile extends PlanBase {
             dynamicRules.bonusTiles.delete( `${x}_${y}` );
         for ( const [ parcelId, p ] of parcels )
             if ( p.carriedBy === me.id ) parcels.delete( parcelId );
+        return true;
+    }
+}
+
+export class GoToNeighborhood extends PlanBase {
+    static isApplicableTo ( action ) { return action === 'go_to_neighborhood'; }
+
+    async execute ( action, tiles, pts ) {
+        if ( this.stopped ) throw [ 'stopped' ];
+
+        // Avoid tiles currently occupied by visible agents, then sort by distance
+        const occupiedKeys = new Set( Array.from( agents.values() ).map( a => `${Math.round(a.x)}_${Math.round(a.y)}` ) );
+        const sorted = [ ...tiles ]
+            .filter( t => !occupiedKeys.has( `${t.x}_${t.y}` ) )
+            .sort( (a, b) => distance( me, a ) - distance( me, b ) );
+
+        if ( sorted.length === 0 ) throw [ 'go_to_neighborhood: no available tiles' ];
+
+        let arrived = false;
+        for ( const target of sorted ) {
+            if ( this.stopped ) throw [ 'stopped' ];
+            try {
+                await this.subIntention( [ 'go_to', target.x, target.y ] );
+                arrived = true;
+                break;
+            } catch ( err ) {
+                this.log( 'go_to_neighborhood: failed to reach tile', target, '- trying next' );
+            }
+        }
+
+        if ( !arrived ) throw [ 'go_to_neighborhood: could not reach any tile' ];
+
+        writeFileSync( SLAVE_STATUS_PATH, JSON.stringify( { arrived: true, x: me.x, y: me.y }, null, 2 ) );
+        console.log( `[slave] Arrived at neighborhood (${me.x},${me.y}), waiting for RESUME...` );
+
+        await waitForResume();
+        console.log( '[slave] RESUME received, resuming normal operation.' );
         return true;
     }
 }

@@ -23,7 +23,7 @@
 
 multi-agent coordination and communication tools.
 
-• Move both agents to the neighborhood of position (2,3) within a maximum distance of 3, and have
+• Move both agents to the neighborhood of position (1,1) within a maximum distance of 1, and have
 them wait for each other. You will receive 500pts.
 • If a parcel is initially picked up by one agent and later delivered by the other agent, you will receive a
 200 points bonus.
