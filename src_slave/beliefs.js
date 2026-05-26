@@ -24,6 +24,20 @@ export const agents = new Map();
 
 export const temporaryBlocks = new Map();
 
+/** @type {{x:number, y:number}} */
+export const mapWidthxHeight = { x: 0, y: 0 };
+
+export const CAPACITY = 10;
+
+export const dynamicRules = {
+    forbiddenTiles:     new Set(),
+    deliveryMultipliers: new Map(),
+    stackSizeRule:      null,
+    parcelMaxReward:    Infinity,
+    bonusTiles:         new Map(),
+    edgeRules:          new Map(),
+};
+
 /**
  * Parzen window weight for each spawn tile, keyed by 'x_y'.
  * Recomputed whenever the map is updated. Used by Explore for weighted sampling.

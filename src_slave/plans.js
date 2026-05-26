@@ -1,5 +1,5 @@
 import { socket } from './socket.js';
-import { me, mapBeliefs, spawnTiles, spawnWeights, parcels, gameConfig, temporaryBlocks } from './beliefs.js';
+import { me, mapBeliefs, spawnTiles, spawnWeights, parcels, gameConfig, temporaryBlocks, dynamicRules } from './beliefs.js';
 import { distance, weightedRandom } from './utils.js';
 import { astar } from './pathfinding.js';
 import { IntentionDeliberation } from './agent.js';
@@ -235,5 +235,34 @@ export class AStarMove extends PlanBase {
 
 
 
-// // Export the array so the BDI engine can iterate over available plans
-// export const planLibrary = [ GoPickUp, GoDeliver, AStarMove, Explore ];
+export class GoToBonus extends PlanBase {
+    static isApplicableTo ( action ) { return action === 'go_to_bonus'; }
+
+    async execute ( action, x, y, id ) {
+        if ( this.stopped ) throw [ 'stopped' ];
+        await this.subIntention( [ 'go_to', x, y ] );
+        if ( id && [ 'left', 'right', 'top', 'bottom' ].includes( id ) )
+            dynamicRules.edgeRules.delete( id );
+        else
+            dynamicRules.bonusTiles.delete( `${x}_${y}` );
+        return true;
+    }
+}
+
+export class DropOnTile extends PlanBase {
+    static isApplicableTo ( action ) { return action === 'drop_on_tile'; }
+
+    async execute ( action, x, y, id ) {
+        if ( this.stopped ) throw [ 'stopped' ];
+        await this.subIntention( [ 'go_to', x, y ] );
+        if ( this.stopped ) throw [ 'stopped' ];
+        await socket.emitPutdown();
+        if ( id && [ 'left', 'right', 'top', 'bottom' ].includes( id ) )
+            dynamicRules.edgeRules.delete( id );
+        else
+            dynamicRules.bonusTiles.delete( `${x}_${y}` );
+        for ( const [ parcelId, p ] of parcels )
+            if ( p.carriedBy === me.id ) parcels.delete( parcelId );
+        return true;
+    }
+}

@@ -1,8 +1,26 @@
 import "dotenv/config";
 import OpenAI from "openai";
+import { writeFileSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 import { ADMIN_ID, ADMIN_NAME, dynamicRules } from "./beliefs.js";
 import { socket } from "./socket.js";
-// import me from "./beliefs.js";
+
+const __dir = dirname( fileURLToPath( import.meta.url ) );
+const SHARED_CONFIG_PATH = join( __dir, '..', 'shared-config.json' );
+
+function writeSharedConfig () {
+    const snapshot = {
+        forbiddenTiles:      Array.from( dynamicRules.forbiddenTiles ),
+        deliveryMultipliers: Object.fromEntries( dynamicRules.deliveryMultipliers ),
+        stackSizeRule:       dynamicRules.stackSizeRule,
+        parcelMaxReward:     isFinite( dynamicRules.parcelMaxReward ) ? dynamicRules.parcelMaxReward : null,
+        bonusTiles:          Object.fromEntries( dynamicRules.bonusTiles ),
+        edgeRules:           Object.fromEntries( dynamicRules.edgeRules ),
+    };
+    writeFileSync( SHARED_CONFIG_PATH, JSON.stringify( snapshot, null, 2 ) );
+    console.log( '[shared-config] Written to disk.' );
+}
 
 // ==========================================
 // 1. LiteLLM Configuration
@@ -33,24 +51,28 @@ const client = new OpenAI({
 function set_forbidden_tile(input) {
     const [x, y] = input.split(',').map(s => Number(s.trim()));
     dynamicRules.forbiddenTiles.add(`${x}_${y}`);
+    writeSharedConfig();
     return `Tile (${x},${y}) is now forbidden.`;
 }
 
 function set_delivery_multiplier(input) {
     const [x, y, multiplier] = input.split(',').map(s => Number(s.trim()));
     dynamicRules.deliveryMultipliers.set(`${x}_${y}`, multiplier);
+    writeSharedConfig();
     return `Delivery multiplier at (${x},${y}) set to ${multiplier}x.`;
 }
 
 function set_stack_size(input) {
     const [size, multiplier] = input.split(',').map(s => Number(s.trim()));
     dynamicRules.stackSizeRule = { size, multiplier };
+    writeSharedConfig();
     return `Stack rule applied: Stacks of exactly ${size} get a ${multiplier}x multiplier.`;
 }
 
 function set_parcel_filter(input) {
     const maxReward = Number(input.trim());
     dynamicRules.parcelMaxReward = maxReward;
+    writeSharedConfig();
     return `Agent will now pick up parcels, but wait to deliver them until their reward decays to ${maxReward} or below.`;
 }
 
@@ -64,16 +86,14 @@ function set_location_rule(input) {
     // 1. Handle Keyword Maps (leftmost, rightmost, top, bottom)
     if (['leftmost', 'rightmost', 'top', 'bottom'].includes(target)) {
         const pts = Number(parts[1].trim());
-        // Parse the boolean (defaults to false/visit if not provided)
         const mustDrop = parts[2] ? parts[2].trim().toLowerCase() === 'true' : false;
-        
         const edgeMap = /** @type {Record<string, string>} */ ({ leftmost: 'left', rightmost: 'right', top: 'top', bottom: 'bottom' });
         const edge = edgeMap[target];
-        
         dynamicRules.edgeRules.set(edge, { pts, mustDrop });
+        writeSharedConfig();
         return `Edge rule recorded: ${target} edge assigned ${pts}pts. Must drop package: ${mustDrop}.`;
-    } 
-    
+    }
+
     // 2. Handle Coordinate Calculations (x, y)
     else {
         const x = Number(parts[0].trim());
@@ -81,18 +101,16 @@ function set_location_rule(input) {
         const pts = Number(parts[2].trim());
         const mustDrop = parts[3] ? parts[3].trim().toLowerCase() === 'true' : false;
         const key = `${x}_${y}`;
-        
+
         if (pts < 0) {
-            // Negative score turns tile into a forbidden obstacle
             dynamicRules.forbiddenTiles.add(key);
             dynamicRules.bonusTiles.delete(key);
+            writeSharedConfig();
             return `Tile (${x},${y}) is now blacklisted due to negative feedback (${pts}pts).`;
         } else {
-            // Unban check: If it was blacklisted previously, lift the ban
-            if (dynamicRules.forbiddenTiles.has(key)) {
-                dynamicRules.forbiddenTiles.delete(key);
-            }
+            if (dynamicRules.forbiddenTiles.has(key)) dynamicRules.forbiddenTiles.delete(key);
             dynamicRules.bonusTiles.set(key, { pts, mustDrop });
+            writeSharedConfig();
             return `Reward profile established at (${x},${y}) for ${pts}pts. Must drop package: ${mustDrop}.`;
         }
     }
@@ -102,10 +120,11 @@ async function calculate(expression) {
   console.log("---- CALCULATE ----");
 
   try {
-    // Demo only: eval is unsafe for production
-      await socket.emitAsk( ADMIN_ID , String(eval(expression)) );
-
-    return String(eval(expression));
+    // Expose bare Math names (round, floor, sqrt, …) so the model can skip "Math."
+    const preamble = 'const {abs,ceil,floor,round,sqrt,min,max,pow,log,PI}=Math;';
+    const result = String(eval(preamble + expression));
+    await socket.emitAsk( currentSenderId, result );
+    return result;
   } catch (error) {
     return `Error: ${error.message}`;
   }
@@ -147,7 +166,7 @@ async function get_current_time(location) {
     const formattedDate = `${map.year}-${map.month}-${map.day}`;
     const formattedTime = `${map.hour}:${map.minute}:${map.second}`;
 
-    await socket.emitAsk( ADMIN_ID , `The current local time in ${config.city} is ${formattedDate} ${formattedTime} (${config.timeZone}).` );
+    await socket.emitAsk( currentSenderId, `The current local time in ${config.city} is ${formattedDate} ${formattedTime} (${config.timeZone}).` );
 
     return `The current local time in ${config.city} is ${formattedDate} ${formattedTime} (${config.timeZone}).`;
   } catch (error) {
@@ -192,15 +211,18 @@ async function callModel(messages, { temperature = 0 } = {}) {
 
 function extractAction(text) {
   const actionMatch = text.match(/^Action:\s*(.+)$/im);
-  const actionInputMatch = text.match(/^Action Input:\s*(.+)$/im);
+  // Allow empty Action Input (for no-arg tools like genericResponse)
+  const actionInputMatch = text.match(/^Action Input:\s*(.*)$/im);
 
   if (!actionMatch || !actionInputMatch) {
     return null;
   }
 
+  const actionInput = actionInputMatch[1].trim();
+  // Treat "none" as empty (model sometimes writes "Action Input: none")
   return {
     action: actionMatch[1].trim(),
-    actionInput: actionInputMatch[1].trim(),
+    actionInput: actionInput === 'none' ? '' : actionInput,
   };
 }
 
@@ -343,6 +365,10 @@ If any step failed or could not be verified, say so explicitly.
 // ==========================================
 
 const MAX_HISTORY = 20;
+
+// ID of the agent whose message is currently being processed.
+// Set at the start of each onMsg handler and used by tools that reply.
+let currentSenderId = ADMIN_ID;
 
 // Global memory stores only the visible conversation.
 // It does not store internal actions, observations, or plans.
@@ -579,9 +605,9 @@ async function runAgentTurn(userInput) {
 
   if (genericAnwer) {
     console.log("[Note: the assistant returned a generic response, likely because the user's request could not be fulfilled with the available tools.]\n");
-    await socket.emitAsk( ADMIN_ID , finalAnswer );
     genericAnwer = false;
   }
+  await socket.emitAsk( currentSenderId, finalAnswer );
 
   // 4. Store only visible conversation
   messages.push({
@@ -613,6 +639,9 @@ console.log("Planner + Executor Agent started.");
 console.log("Listening to DeliverooJS chat...");
 console.log("Only accepting commands from player id: 'admin'.\n");
 
+// Reset shared config so BDI starts from the same clean state
+writeSharedConfig();
+
 socket.onMsg(async (id, name, msg) => {
   // Security check: Ignore all messages unless the ID is exactly 'admin'
 
@@ -621,7 +650,7 @@ socket.onMsg(async (id, name, msg) => {
   //   return; 
   // }
 
-  console.log("=== AUTHORIZED COMMAND FROM ADMIN ===");
+  console.log(`=== COMMAND FROM ${name} (${id}) ===`);
   console.log(`Message: ${msg}\n`);
 
   const command = msg.trim().toLowerCase();

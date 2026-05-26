@@ -1,5 +1,5 @@
 import { planLibrary } from './plans.js';
-import { me, parcels, deliveryTiles, gameConfig } from './beliefs.js';
+import { me, parcels, deliveryTiles, gameConfig, dynamicRules } from './beliefs.js';
 import { distance, parseMs } from './utils.js';
 import { optionsGeneration } from './index.js'; 
 
@@ -58,43 +58,70 @@ export class IntentionRevisionRevise extends IntentionRevision {
         const decayIntervalMs = parseMs( gameConfig.GAME.parcels.decaying_event );
         const decayPerStep    = gameConfig.CLOCK / decayIntervalMs;
 
+        if ( action === 'go_to_bonus' ) {
+            const rule = dynamicRules.edgeRules.get( id ) || dynamicRules.bonusTiles.get( `${x}_${y}` );
+            if ( !rule || rule.pts <= 0 ) return -1;
+            return rule.pts - distance( me, { x, y } ) * decayPerStep;
+        }
+
+        if ( action === 'drop_on_tile' ) {
+            const rule = dynamicRules.edgeRules.get( id ) || dynamicRules.bonusTiles.get( `${x}_${y}` );
+            if ( !rule || rule.pts <= 0 ) return -1;
+            const carried = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id );
+            if ( carried.length === 0 ) return -1;
+            return ( rule.pts * carried.length ) - distance( me, { x, y } ) * decayPerStep;
+        }
+
         if ( action === 'go_deliver' ) {
             const carried = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id );
             if ( carried.length === 0 ) return -1;
+
+            const isTooHigh = carried.some( p => p.reward > dynamicRules.parcelMaxReward );
+            if ( isTooHigh ) return -1;
+
             const dist = distance( me, { x, y } );
+            let partialUtility = carried.reduce( (sum, p) => sum + Math.max( 0, p.reward - dist * decayPerStep ), 0 );
 
-            // sum of utilities of all parcels being delivered, where utility of each parcel is max(0, reward - decayPerStep * dist)
-            const partialUtility = carried.reduce( (sum, p) => sum + Math.max(0, p.reward - dist * decayPerStep), 0 );
+            if ( dynamicRules.stackSizeRule ) {
+                const { size, multiplier } = dynamicRules.stackSizeRule;
+                if ( multiplier >= 1 ) {
+                    if ( carried.length === size ) partialUtility *= multiplier;
+                    else if ( carried.length < size ) return -1;
+                } else {
+                    if ( carried.length === size ) partialUtility *= multiplier;
+                }
+            }
 
-            if ( partialUtility < 1 ) return -1; // If all parcels would have 0 or negative utility, skip delivery
+            const key = `${x}_${y}`;
+            if ( dynamicRules.deliveryMultipliers.has( key ) )
+                partialUtility *= dynamicRules.deliveryMultipliers.get( key );
 
+            if ( partialUtility < 1 ) return -1;
             return partialUtility + gameConfig.GAME.parcels.reward_variance / 2;
         }
 
         if ( action === 'go_pick_up' ) {
             const parcel = parcels.get( id );
             if ( !parcel || parcel.carriedBy ) return -1;
+            if ( parcel.reward > dynamicRules.parcelMaxReward ) return -1;
 
             const carried = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id );
 
-            // Nearest delivery tile from the pickup spot (Manhattan)
+            if ( dynamicRules.stackSizeRule ) {
+                if ( carried.length >= dynamicRules.stackSizeRule.size ) return -1;
+            }
+
             const nearestDel = deliveryTiles.reduce( (best, t) => {
                 const d = distance( { x, y }, t );
                 return d < best.d ? { t, d } : best;
             }, { t: null, d: Infinity } );
             if ( !nearestDel.t ) return -1;
 
-            // All parcels (carried + new) decay for the full trip: me→parcel→delivery
             const totalSteps = distance( me, { x, y } ) + nearestDel.d;
-
-            // Utility of the new parcel is its reward minus decay over the full trip, 
-            // and utility of carried parcels also decays more while detouring for the pickup. 
-            // If totalSteps is large, this may make the pickup not worth it.
             const revisedUtility = [ ...carried, parcel ].reduce(
-                (sum, p) => sum + Math.max(0, p.reward - totalSteps * decayPerStep), 0);
+                (sum, p) => sum + Math.max( 0, p.reward - totalSteps * decayPerStep ), 0 );
 
-            if ( revisedUtility < 1 ) return -1; // If all parcels would have 0 or negative utility, skip pickup
-
+            if ( revisedUtility < 1 ) return -1;
             return revisedUtility;
         }
 

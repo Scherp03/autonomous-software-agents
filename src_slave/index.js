@@ -1,8 +1,9 @@
 import { socket } from './socket.js';
-import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig } from './beliefs.js';
+import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, mapWidthxHeight, CAPACITY, dynamicRules } from './beliefs.js';
 import { distance } from './utils.js';
 import { IntentionRevisionRevise } from './agent.js';
-import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary } from './plans.js';
+import { GoPickUp, GoDeliver, AStarMove, Explore, GoToBonus, DropOnTile, planLibrary } from './plans.js';
+import './config-sync.js';
 
 // ─── Belief Revision (Socket Listeners) ──────────────────────────────────────
 socket.onConfig( config => {
@@ -32,6 +33,24 @@ socket.onYou( ( {id, name, x, y, score} ) => {
     me.x     = x ?? me.x;
     me.y     = y ?? me.y;
     me.score = score;
+
+    // Consume visit-type bonus tiles when we step on them
+    const key = `${me.x}_${me.y}`;
+    if ( dynamicRules.bonusTiles.has( key ) && !dynamicRules.bonusTiles.get( key ).mustDrop )
+        dynamicRules.bonusTiles.delete( key );
+
+    // Clear visit-type edge rules when we reach that border
+    const cx = Math.round( me.x );
+    const cy = Math.round( me.y );
+    const borders = [];
+    if ( cx === 0 )                    borders.push( 'left' );
+    if ( cx === mapWidthxHeight.x )    borders.push( 'right' );
+    if ( cy === 0 )                    borders.push( 'bottom' );
+    if ( cy === mapWidthxHeight.y )    borders.push( 'top' );
+    for ( const b of borders ) {
+        if ( dynamicRules.edgeRules.has( b ) && !dynamicRules.edgeRules.get( b ).mustDrop )
+            dynamicRules.edgeRules.delete( b );
+    }
 } );
 
 function updateTileBelief( x, y, type ) {
@@ -75,6 +94,8 @@ function recomputeSpawnWeights() {
 
 socket.onMap( (width, height, tile) => {
     const tiles = Array.isArray(tile) ? tile : (tile || []);
+    mapWidthxHeight.x = width - 4;
+    mapWidthxHeight.y = height - 4;
     for ( const tile of tiles ) {
         mapBeliefs.set( `${tile.x}_${tile.y}`, tile );
         updateTileBelief( tile.x, tile.y, tile.type );
@@ -108,31 +129,58 @@ export function optionsGeneration () {
         !p.carriedBy && p.reward > gameConfig.GAME.parcels.reward_variance
     );
 
-    // Propose delivery to the nearest tile if carrying anything
-    if ( carried.length > 0 && deliveryTiles.length > 0 ) {
-        const nearestDelivery = deliveryTiles.reduce( (best, t) => {
+    // Bonus tile visits / drops
+    for ( const [ key, rule ] of dynamicRules.bonusTiles.entries() ) {
+        const [ bx, by ] = key.split( '_' ).map( Number );
+        const tile = mapBeliefs.get( `${bx}_${by}` );
+        if ( !tile || tile.type === '0' ) { dynamicRules.bonusTiles.delete( key ); continue; }
+        if ( rule.mustDrop && carried.length > 0 ) myAgent.push( [ 'drop_on_tile', bx, by ] );
+        else if ( !rule.mustDrop )                 myAgent.push( [ 'go_to_bonus',  bx, by ] );
+    }
+
+    // Edge visits / drops — pick closest walkable tile on each edge
+    for ( const [ edge, rule ] of dynamicRules.edgeRules.entries() ) {
+        if ( rule.pts <= 0 ) continue;
+        const edgeTiles = Array.from( mapBeliefs.values() ).filter( t => {
+            if ( t.type == '0' ) return false;
+            if ( edge === 'left'   && t.x === 0 )                    return true;
+            if ( edge === 'right'  && t.x === mapWidthxHeight.x - 1 ) return true;
+            if ( edge === 'bottom' && t.y === 0 )                    return true;
+            if ( edge === 'top'    && t.y === mapWidthxHeight.y - 1 ) return true;
+            return false;
+        } );
+        if ( edgeTiles.length === 0 ) continue;
+        const target = edgeTiles.reduce( (best, t) => {
             const d = distance( me, t );
             return d < best.d ? { t, d } : best;
         }, { t: null, d: Infinity } ).t;
-        if ( nearestDelivery ) {
-            myAgent.push( [ 'go_deliver', nearestDelivery.x, nearestDelivery.y ] );
+        if ( rule.mustDrop && carried.length > 0 ) myAgent.push( [ 'drop_on_tile', target.x, target.y, edge ] );
+        else if ( !rule.mustDrop )                 myAgent.push( [ 'go_to_bonus',  target.x, target.y, edge ] );
+    }
+
+    // Delivery: only propose when stack size rule is satisfied (or not set)
+    if ( carried.length > 0 && deliveryTiles.length > 0 ) {
+        const isBonus = dynamicRules.stackSizeRule && dynamicRules.stackSizeRule.multiplier > 1;
+        if ( !isBonus || carried.length >= dynamicRules.stackSizeRule.size ) {
+            const nearestDelivery = deliveryTiles.reduce( (best, t) => {
+                const d = distance( me, t );
+                return d < best.d ? { t, d } : best;
+            }, { t: null, d: Infinity } ).t;
+            if ( nearestDelivery )
+                myAgent.push( [ 'go_deliver', nearestDelivery.x, nearestDelivery.y ] );
         }
     }
 
-    // Propose each available parcel as a pickup, unless already at capacity
-    // or another visible agent is strictly closer to that parcel
-    if ( carried.length < gameConfig.GAME.player.capacity ) {
+    // Pickup: respect capacity and stack size limits
+    if ( carried.length < CAPACITY ) {
         for ( const p of available ) {
             const closerAgentExists = Array.from( agents.values() ).some(
                 a => distance( a, p ) < distance( me, p )
             );
-            if ( !closerAgentExists ) {
-                myAgent.push( [ 'go_pick_up', p.x, p.y, p.id ] );
-            }
+            if ( !closerAgentExists ) myAgent.push( [ 'go_pick_up', p.x, p.y, p.id ] );
         }
     }
 
-    // Always propose explore as fallback; getUtility ranks it last (utility = 0)
     myAgent.push( [ 'explore' ] );
 }
 
@@ -144,6 +192,8 @@ const myAgent = new IntentionRevisionRevise();
 
 myAgent.loop();
 
+planLibrary.push( GoToBonus );
+planLibrary.push( DropOnTile );
 planLibrary.push( GoPickUp );
 planLibrary.push( GoDeliver );
 planLibrary.push( AStarMove );
