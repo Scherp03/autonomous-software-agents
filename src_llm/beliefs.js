@@ -89,7 +89,8 @@ export const dynamicRules = {
 
 export const CAPACITY = 10;
 
-export const ADMIN_ID = '715c7f';  
+// export const ADMIN_ID = '715c7f';
+export const ADMIN_ID = '00a552';  
 export const ADMIN_NAME = 'admin'; 
 // export const ADMIN_ID = "4c3c93"
 // export const ADMIN_NAME = "J0K3R"

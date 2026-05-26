@@ -115,7 +115,7 @@ export class Explore extends PlanBase {
                 await this.subIntention( [ 'go_to', target.x, target.y ] );
                 return true;
             } catch (error) {
-                this.log( 'explore failed to go_to target', target, 'error:', error );
+                // this.log( 'explore failed to go_to target', target, 'error:', error );
             }
         }
     
@@ -200,7 +200,7 @@ export class AStarMove extends PlanBase {
             const result = await socket.emitMove( move );
 
             if ( !result ) {
-                this.log( `Move ${move} failed. Blacklisting tile temporarily.` );
+                // this.log( `Move ${move} failed. Blacklisting tile temporarily.` );
 
                 let blockX = Math.round(me.x);
                 let blockY = Math.round(me.y);

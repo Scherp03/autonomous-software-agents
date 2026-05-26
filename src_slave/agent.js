@@ -21,7 +21,7 @@ export class IntentionRevision {
                     await intention.achieve();
                 } catch ( err ) {
                     // Swallow expected plan failures or 'stopped' signals
-                    console.log( 'Failed intention', ...intention.predicate, 'with error:', err )
+                    // console.log( 'Failed intention', ...intention.predicate, 'with error:', err )
                 }
 
                 // Only shift if the intention we just finished is still at index 0.
@@ -141,7 +141,7 @@ export class IntentionRevisionRevise extends IntentionRevision {
         // 1. Evaluate validity of intention
         const utility = this.getUtility( predicate );
         if ( utility < 0 ) {
-            console.log( '\tIntention rejected (invalid or low utility):', ...predicate );
+            // console.log( '\tIntention rejected (invalid or low utility):', ...predicate );
             return; 
         }
 
@@ -230,7 +230,7 @@ export class IntentionDeliberation {
     get stopped () { return this.#stopped; }
     
     stop () {
-        this.log( 'stop intentionDeliberation', ...this.#predicate );
+        // this.log( 'stop intentionDeliberation', ...this.#predicate );
         this.#stopped = true;
         if ( this.#current_plan ) this.#current_plan.stop();
     }
@@ -282,14 +282,14 @@ export class IntentionDeliberation {
             if ( planClass.isApplicableTo( ...this.predicate ) ) {
                 // plan is instantiated with a reference to the current intention (this) as its parent, so it can call subIntention if needed
                 this.#current_plan = new planClass( this.#parent );
-                this.log('achieving intention', ...this.predicate, 'with plan', planClass.name);
+                // this.log('achieving intention', ...this.predicate, 'with plan', planClass.name);
                 // and plan is executed and result returned to the caller (true if achieved, false if failed but no error, or error thrown if failed with error) 
                 try {
                     const res = await this.#current_plan?.execute( ...this.predicate );
-                    this.log( 'succesful intention', ...this.predicate, 'with plan', planClass.name, 'with result:', res );
+                    // this.log( 'succesful intention', ...this.predicate, 'with plan', planClass.name, 'with result:', res );
                     return res || false;
                 } catch ( error ) {
-                    this.log( 'failed', ...this.predicate, 'error:', error );
+                    // this.log( 'failed', ...this.predicate, 'error:', error );
                 }
             }
         }
