@@ -692,10 +692,10 @@ writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( {} ) );
 socket.onMsg(async (id, name, msg) => {
   // Security check: Ignore all messages unless the ID is exactly 'admin'
 
-  if (id != ADMIN_ID && name.toLowerCase() != ADMIN_NAME) {
-    console.log(`[Blocked] Ignored message from ${name} (${id}): ${msg}`);
-    return; 
-  }
+  // if (id != ADMIN_ID && name.toLowerCase() != ADMIN_NAME) {
+  //   console.log(`[Blocked] Ignored message from ${name} (${id}): ${msg}`);
+  //   return; 
+  // }
 
   console.log(`=== COMMAND FROM ${name} (${id}) ===`);
   console.log(`Message: ${msg}\n`);

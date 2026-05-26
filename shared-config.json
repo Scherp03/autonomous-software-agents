@@ -4,5 +4,10 @@
   "stackSizeRule": null,
   "parcelMaxReward": null,
   "bonusTiles": {},
-  "edgeRules": {}
+  "edgeRules": {
+    "right": {
+      "pts": 5000,
+      "mustDrop": true
+    }
+  }
 }
