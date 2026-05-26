@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import { socket } from './socket.js';
 import { me, mapBeliefs, spawnTiles, spawnWeights, agents, parcels, gameConfig, temporaryBlocks, CAPACITY, dynamicRules } from './beliefs.js';
 import { distance, weightedRandom } from './utils.js';
-import { astar } from './pathfinding.js';
+import { astar, astarDistance } from './pathfinding.js';
 import { IntentionDeliberation } from './agent.js';
 
 const __dir = dirname( fileURLToPath( import.meta.url ) );
@@ -93,7 +93,7 @@ export class Explore extends PlanBase {
         let target;
 
         if ( spawnTiles.length > 0 ) {
-            const farSpawns = spawnTiles.filter( t => distance(me, t) > 2 );
+            const farSpawns = spawnTiles.filter( t => astarDistance(me, t) > 2 );
             const candidates = farSpawns.length > 0 ? farSpawns : spawnTiles;
             const h     = gameConfig.GAME.player.observation_distance;
             const twoH2 = 2 * h * h;
@@ -107,7 +107,7 @@ export class Explore extends PlanBase {
             target = weightedRandom( candidates, weights );
         } else {
             const walkable = Array.from( mapBeliefs.values() ).filter( t => t.type !== '0' );
-            const farTiles = walkable.filter( t => distance(me, t) > 3 );
+            const farTiles = walkable.filter( t => astarDistance(me, t) > 3 );
             if ( farTiles.length > 0 ) {
                 target = farTiles[ Math.floor( Math.random() * farTiles.length ) ];
             } else if ( walkable.length > 0 ) {
