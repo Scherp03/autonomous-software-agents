@@ -1,5 +1,5 @@
 import { socket } from './socket.js';
-import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, dynamicRules, mapWidthxHeight, CAPACITY, temporaryBlocks } from './beliefs.js';
+import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, dynamicRules, mapWidthxHeight, CAPACITY, temporaryBlocks, failureCounters } from './beliefs.js';
 import { distance } from './utils.js';
 import { IntentionRevisionRevise } from './agent.js';
 import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary, GoToBonus, DropOnTile, GoToNeighborhood } from './plans.js';
@@ -41,6 +41,8 @@ socket.onYou( ( {id, name, x, y, score} ) => {
     const borders = [];
     const cx = Math.round(me.x);
     const cy = Math.round(me.y);
+
+    if (failureCounters.has(key)) failureCounters.set(key, 0);
     
     if (dynamicRules.bonusTiles.has(key) && !dynamicRules.bonusTiles.get(key).mustDrop) {
         dynamicRules.bonusTiles.delete(key);
@@ -168,9 +170,10 @@ export function optionsGeneration () {
 
         // Protection against forbidden or temporarily blocked tiles
         const isForbidden = dynamicRules.forbiddenTiles.has(key);
-        // const isTempBlocked = temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now();
+        const isTempBlocked = temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now();
+        // const isFrustrated = frustrationBlocks.has(key) && frustrationBlocks.get(key) > Date.now();
 
-        if (!isForbidden) {            
+        if (!isForbidden && !isTempBlocked) {         
             // console.log(`[Info] Tile ${bx},${by} is currently ${isForbidden ? 'forbidden' : 'temporarily blocked'}. Skipping for now.`);    
             if (rule.mustDrop && carried.length > 0) {
                 myAgent.push(['drop_on_tile', bx, by]);
@@ -205,8 +208,9 @@ export function optionsGeneration () {
                     .filter( t => {
                     const key = `${t.x}_${t.y}`;
                     const isForbidden = dynamicRules.forbiddenTiles.has(key);
-                    // const isTempBlocked = temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now();
-                    return !isForbidden; // && !isTempBlocked; 
+                    // const isFrustrated = frustrationBlocks.has(key) && frustrationBlocks.get(key) > Date.now();
+                    const isTempBlocked = temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now();
+                    return !isForbidden && !isTempBlocked; 
                     })
                     .reduce((best, t) => {
                         const d = distance(me, t);
@@ -235,8 +239,9 @@ export function optionsGeneration () {
             .filter( t => {
                 const key = `${t.x}_${t.y}`;
                 const isForbidden = dynamicRules.forbiddenTiles.has(key);
-                // const isTempBlocked = temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now();
-                return !isForbidden; // && !isTempBlocked;
+                const isTempBlocked = temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now();
+                // const isFrustrated = frustrationBlocks.has(key) && frustrationBlocks.get(key) > Date.now();
+                return !isForbidden && !isTempBlocked; 
             })
             .reduce( (best, t) => {
 
@@ -261,6 +266,11 @@ export function optionsGeneration () {
     // or another visible agent is strictly closer to that parcel
     if ( carried.length < CAPACITY ) {
         for ( const p of available ) {
+            // Ignore parcels on frustrated tiles
+            const key = `${Math.round(p.x)}_${Math.round(p.y)}`;
+            // if (frustrationBlocks.has(key) && frustrationBlocks.get(key) > Date.now()) continue;
+            if (temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now()) continue;
+
             const closerAgentExists = Array.from( agents.values() ).some(
                 a => distance( a, p ) < distance( me, p )
             );

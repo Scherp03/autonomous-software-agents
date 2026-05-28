@@ -1,5 +1,5 @@
 import { socket } from './socket.js';
-import { me, mapBeliefs, spawnTiles, spawnWeights, parcels, gameConfig, temporaryBlocks } from './beliefs.js';
+import { me, mapBeliefs, spawnTiles, spawnWeights, parcels, gameConfig, temporaryBlocks, failureCounters } from './beliefs.js';
 import { distance, weightedRandom } from './utils.js';
 import { astar, astarDistance } from './pathfinding.js';
 import { IntentionDeliberation } from './agent.js';
@@ -183,6 +183,7 @@ export class AStarMove extends PlanBase {
     async execute ( go_to, targetX, targetY ) {
         targetX = Math.round(targetX);
         targetY = Math.round(targetY);
+        const targetKey = `${targetX}_${targetY}`;
 
         while ( Math.round(me.x) !== targetX || Math.round(me.y) !== targetY ) {
             if ( this.stopped ) throw [ 'stopped' ];
@@ -198,7 +199,24 @@ export class AStarMove extends PlanBase {
             const result = await socket.emitMove( move );
 
             if ( !result ) {
-                this.log( `Move ${move} failed. Blacklisting tile temporarily.` );
+                // this.log( `Move ${move} failed. Blacklisting tile temporarily.` );
+
+                // Increment failure counter for this target
+                let currentFailures = failureCounters.get(targetKey) || 0;
+                failureCounters.set(targetKey, currentFailures + 1);
+
+                console.log(failureCounters.get(targetKey))
+
+                // If stuck for 5 tries, abandon the goal for 15 seconds!
+                if ( failureCounters.get(targetKey) >= 5 ) {
+                    console.log(`[Stuck] Bumped 5 times. Abandoning target ${targetX},${targetY} for 15s.`);
+                    // frustrationBlocks.set(targetKey, Date.now() + 15000);
+
+                    temporaryBlocks.set(targetKey, Date.now() + 15000);
+
+                    failureCounters.set(targetKey, 0); // reset counter after applying frustration block
+                    throw [ 'stuck', targetX, targetY ];
+                }
 
                 let blockX = Math.round(me.x);
                 let blockY = Math.round(me.y);
