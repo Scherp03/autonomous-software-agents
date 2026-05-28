@@ -1,5 +1,5 @@
 import { socket } from './socket.js';
-import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, dynamicRules, mapWidthxHeight, CAPACITY } from './beliefs.js';
+import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, dynamicRules, mapWidthxHeight, CAPACITY, temporaryBlocks } from './beliefs.js';
 import { distance } from './utils.js';
 import { IntentionRevisionRevise } from './agent.js';
 import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary, GoToBonus, DropOnTile, GoToNeighborhood } from './plans.js';
@@ -99,14 +99,33 @@ function recomputeSpawnWeights() {
 }
 
 socket.onMap( (width, height, tile) => {
-    const tiles = Array.isArray(tile) ? tile : (tile || []);
-    mapWidthxHeight.x = width - 4;
-    mapWidthxHeight.y = height - 4;
-    for ( const tile of tiles ) {
-        mapBeliefs.set( `${tile.x}_${tile.y}`, tile );
-        updateTileBelief( tile.x, tile.y, tile.type );
+const tiles = Array.isArray(tile) ? tile : (tile || []);
+    
+    let maxX = -1;
+    let maxY = -1;
+    let minX = Infinity;
+    let minY = Infinity;
+
+    for ( const t of tiles ) {
+        mapBeliefs.set( `${t.x}_${t.y}`, t );
+        updateTileBelief( t.x, t.y, t.type );
+        
+        // Dynamically find the highest and lowest walkable boundaries
+        if (t.type !== '0') {
+            if (t.x > maxX) maxX = t.x;
+            if (t.y > maxY) maxY = t.y;
+            if (t.x < minX) minX = t.x;
+            if (t.y < minY) minY = t.y;
+        }
     }
-    console.log( `[map] Received map of size ${width}x${height}` );
+    
+    // Save the true boundaries
+    mapWidthxHeight.x = maxX;
+    mapWidthxHeight.y = maxY;
+    mapWidthxHeight.minX = minX;
+    mapWidthxHeight.minY = minY;
+
+    console.log( `[map] Received map of size ${width}x${height}. True walkable bounds: X(${minX} to ${maxX}), Y(${minY} to ${maxY})` );
     recomputeSpawnWeights();
 });
 
@@ -135,13 +154,7 @@ export function optionsGeneration () {
     const available = Array.from( parcels.values() ).filter( p =>
         !p.carriedBy && p.reward > gameConfig.GAME.parcels.reward_variance
     );
-
-    // // NEW: Generate options for bonus tiles
-    // for (const [key, pts] of dynamicRules.bonusTiles.entries()) {
-    //     const [x, y] = key.split('_').map(Number);
-    //     myAgent.push(['go_to_bonus', x, y]);
-    // }
-
+    
     // Generate individual tile tasks
     for (const [key, rule] of dynamicRules.bonusTiles.entries()) {
         const [bx, by] = key.split('_').map(Number);
@@ -153,10 +166,17 @@ export function optionsGeneration () {
             continue;
         }
 
-        if (rule.mustDrop && carried.length > 0) {
-            myAgent.push(['drop_on_tile', bx, by]);
-        } else if (!rule.mustDrop) {
-            myAgent.push(['go_to_bonus', bx, by]);
+        // Protection against forbidden or temporarily blocked tiles
+        const isForbidden = dynamicRules.forbiddenTiles.has(key);
+        // const isTempBlocked = temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now();
+
+        if (!isForbidden) {            
+            // console.log(`[Info] Tile ${bx},${by} is currently ${isForbidden ? 'forbidden' : 'temporarily blocked'}. Skipping for now.`);    
+            if (rule.mustDrop && carried.length > 0) {
+                myAgent.push(['drop_on_tile', bx, by]);
+            } else if (!rule.mustDrop) {
+                myAgent.push(['go_to_bonus', bx, by]);
+            }
         }
     }
 
@@ -181,17 +201,25 @@ export function optionsGeneration () {
                 let target = {x:me.x, y:me.y};
 
                 if (walkableEdgeTiles.length > 0) {
-                    target = walkableEdgeTiles.reduce((best, t) => {
+                    target = walkableEdgeTiles
+                    .filter( t => {
+                    const key = `${t.x}_${t.y}`;
+                    const isForbidden = dynamicRules.forbiddenTiles.has(key);
+                    // const isTempBlocked = temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now();
+                    return !isForbidden; // && !isTempBlocked; 
+                    })
+                    .reduce((best, t) => {
                         const d = distance(me, t);
                         return d < best.d ? { t, d } : best;
                     }, { t: null, d: Infinity }).t;
-                }
 
-                // Pass the 'edge' name as the 4th argument (id)
-                if (rule.mustDrop && carried.length > 0) {
-                    myAgent.push(['drop_on_tile', target.x, target.y, edge]);
-                } else if (!rule.mustDrop) {
-                    myAgent.push(['go_to_bonus', target.x, target.y, edge]);
+                    // Pass the 'edge' name as the 4th argument (id)
+                    if (rule.mustDrop && carried.length > 0) {
+                        // console.log(`[Intention] Proposing drop on edge ${edge} at tile ${target.x},${target.y}`);
+                        myAgent.push(['drop_on_tile', target.x, target.y, edge]);
+                    } else if (!rule.mustDrop) {
+                        myAgent.push(['go_to_bonus', target.x, target.y, edge]);
+                    }
                 }
             }
         }
@@ -202,10 +230,27 @@ export function optionsGeneration () {
         // Only delay delivery proposals if we are building a BONUS stack
         const isBonus = dynamicRules.stackSizeRule && dynamicRules.stackSizeRule.multiplier > 1;
         if (!isBonus || carried.length >= dynamicRules.stackSizeRule.size ) {
-            const nearestDelivery = deliveryTiles.reduce( (best, t) => {
+            const nearestDelivery = deliveryTiles
+            // Filter out any delivery tile that is currently forbidden
+            .filter( t => {
+                const key = `${t.x}_${t.y}`;
+                const isForbidden = dynamicRules.forbiddenTiles.has(key);
+                // const isTempBlocked = temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now();
+                return !isForbidden; // && !isTempBlocked;
+            })
+            .reduce( (best, t) => {
+
+                const u = myAgent.getUtility(['go_deliver', t.x, t.y]);
                 const d = distance( me, t );
-                return d < best.d ? { t, d } : best;
-            }, { t: null, d: Infinity } ).t;
+
+                // Pick this tile if it has higher utility, OR if utility is tied but it's closer
+                if ( u > best.u || (u === best.u && d < best.d) ) {
+                    return { t, u, d };
+                }
+
+                // return d < best.d ? { t, d } : best;
+                return best;
+            }, { t: null, u: -Infinity, d: Infinity } ).t;
             if ( nearestDelivery ) {
                 myAgent.push( [ 'go_deliver', nearestDelivery.x, nearestDelivery.y ] );
             }

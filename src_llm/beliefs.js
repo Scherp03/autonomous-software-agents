@@ -5,9 +5,8 @@ export const me = { id: '', name: '', x: -1, y: -1, score: 0 };
  */
 export const mapBeliefs = new Map();
 
-/** @type {{x:number, y:number}} */
-export const mapWidthxHeight = { x: 0, y: 0 };
-
+/** @type {{x:number, y:number, minX:number, minY:number}} */
+export const mapWidthxHeight = { x: 0, y: 0, minX: 0, minY: 0 };
 /** @type { {x:number, y:number}[] } */
 export const deliveryTiles = [];
 

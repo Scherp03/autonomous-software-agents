@@ -1,8 +1,12 @@
 {
-  "forbiddenTiles": [],
-  "deliveryMultipliers": {},
+  "forbiddenTiles": [
+    "0_18"
+  ],
+  "deliveryMultipliers": {
+    "0_18": 0
+  },
   "stackSizeRule": null,
-  "parcelMaxReward": null,
+  "parcelMaxReward": 10,
   "bonusTiles": {},
   "edgeRules": {}
 }

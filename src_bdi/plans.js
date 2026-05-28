@@ -207,7 +207,7 @@ export class AStarMove extends PlanBase {
                 if (move == 'up')    blockY += 1;
                 if (move == 'down')  blockY -= 1;
 
-                temporaryBlocks.set(`${blockX}_${blockY}`, Date.now() + 1000);
+                temporaryBlocks.set(`${blockX}_${blockY}`, Date.now() + 2000);
 
                 await new Promise(res => setTimeout(res, 100));
                 continue;

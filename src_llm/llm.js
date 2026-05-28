@@ -63,6 +63,9 @@ function set_forbidden_tile(input) {
 function set_delivery_multiplier(input) {
     const [x, y, multiplier] = input.split(',').map(s => Number(s.trim()));
     dynamicRules.deliveryMultipliers.set(`${x}_${y}`, multiplier);
+    if (multiplier <= 0) {
+        dynamicRules.forbiddenTiles.add(`${x}_${y}`);
+    }
     writeSharedConfig();
     return `Delivery multiplier at (${x},${y}) set to ${multiplier}x.`;
 }
@@ -340,14 +343,14 @@ Available tools:
 - calculate(expression): evaluates a mathematical expression
 - get_current_time(location): returns the current local time for Rome/Roma
 - set_forbidden_tile(coordinates): prevents the agent from entering a tile. Input format: "x, y" (e.g., "4, 7")
-- set_delivery_multiplier(params): multiplies the reward for delivering at a tile. Input format: "x, y, multiplier" (e.g., "4, 7, 5")
+- set_delivery_multiplier(params): multiplies the reward for delivering at a tile. Usually the request contains keywords such as: "from now on" or "every time". Input format: "x, y, multiplier" (e.g., "4, 7, 5")
 - set_stack_size(params): requires the agent to carry exactly 'size' parcels to get a 'multiplier'. Input format: "size, multiplier" (e.g., "3, 2")
 - set_parcel_filter(maxReward): instructs the agent to wait to deliver and/or pick up parcels until their reward decays to maxReward or below. Input format: "maxReward" (e.g., "10")
 - set_location_rule(params): Configures point allocations or route bans based on spatial regions or tiles. Input format: "target, pts, mustDrop" where target is a coordinate pair 'x, y' or edge terms ('leftmost', 'rightmost', 'top', 'bottom'), pts is an integer value, and mustDrop is a boolean (true if the agent must drop a package, false if it just needs to visit. If not specified, it defaults to false). (e.g., "0, 0, 10, true" or "leftmost, -10, false").
 - set_neighborhood_mission(params): Sends BOTH agents to a neighborhood (area around a map position). Both agents independently navigate to the nearest free tile within the area and wait for each other before resuming. Input format: "cx, cy, radius, pts" where cx/cy is the center coordinate, radius is the Manhattan distance radius, and pts is the bonus points (default 500). (e.g., "5, 5, 3, 500").
+- genericResponse(): if the user request cannot be fulfilled with the available tools, call this to return a generic response to the user without making any configuration changes. Let the answer be very concise and straight to the point.
 - freeze_agents(): Immediately stops BOTH agents. They will not move or pick up parcels until unfrozen. No input required.
 - unfreeze_agents(): Resumes normal operation for BOTH agents after a freeze. No input required.
-- genericResponse(): if the user request cannot be fulfilled with the available tools, call this to return a generic response to the user without making any configuration changes.
 Rules:
 - Return ONLY valid JSON.
 - Do not use markdown.
@@ -381,9 +384,9 @@ Available tools:
 - set_parcel_filter(maxReward) -> format: "maxReward"
 - set_location_rule(params) -> format: "target, pts, mustDrop" where target is a coordinate pair 'x, y' or edge terms ('leftmost', 'rightmost', 'top', 'bottom'), pts is an integer value, and mustDrop is a boolean (true to drop, false to visit).
 - set_neighborhood_mission(params) -> format: "cx, cy, radius, pts" — sends both agents to the area around (cx,cy) within Manhattan radius. Both wait for each other then resume.
+- genericResponse() -> no input, returns a generic fallback response to the user without making any configuration changes. Concise and straight to the point.
 - freeze_agents() -> no input — immediately stops both agents. They will not move until unfrozen.
 - unfreeze_agents() -> no input — resumes both agents after a freeze.
-- genericResponse() -> no input, returns a generic fallback response to the user without making any configuration changes.
 
 You receive:
 - the original user request
@@ -687,7 +690,7 @@ async function runAgentTurn(userInput) {
     await socket.emitAsk( currentSenderId, finalAnswer );
     writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'SAY', toId: currentSenderId, message: finalAnswer } ) );
   }
-  // await socket.emitAsk( currentSenderId, finalAnswer );
+  
 
   // 4. Store conversation with tool log prepended (Fix 2)
   messages.push({
