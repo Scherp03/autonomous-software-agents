@@ -1,8 +1,8 @@
 import { writeFileSync } from 'fs';
 import { socket } from './socket.js';
-import { me, mapBeliefs, spawnTiles, spawnWeights, agents, parcels, gameConfig, temporaryBlocks, dynamicRules } from './beliefs.js';
+import { me, mapBeliefs, spawnTiles, spawnWeights, agents, parcels, gameConfig, temporaryBlocks, dynamicRules, CAPACITY } from './beliefs.js';
 import { distance, weightedRandom } from './utils.js';
-import { astar } from './pathfinding.js';
+import { astar, astarDistance } from './pathfinding.js';
 import { IntentionDeliberation } from './agent.js';
 import { SLAVE_STATUS_PATH, waitForResume } from './slave-command.js';
 
@@ -88,7 +88,7 @@ export class Explore extends PlanBase {
         let target;
 
         if ( spawnTiles.length > 0 ) {
-            const farSpawns = spawnTiles.filter( t => distance(me, t) > 2 );
+            const farSpawns = spawnTiles.filter( t => astarDistance(me, t) > 2 );
             const candidates = farSpawns.length > 0 ? farSpawns : spawnTiles;
             const h     = gameConfig.GAME.player.observation_distance;
             const twoH2 = 2 * h * h;
@@ -102,7 +102,7 @@ export class Explore extends PlanBase {
             target = weightedRandom( candidates, weights );
         } else {
             const walkable = Array.from( mapBeliefs.values() ).filter( t => t.type !== '0' );
-            const farTiles = walkable.filter( t => distance(me, t) > 3 );
+            const farTiles = walkable.filter( t => astarDistance(me, t) > 3 );
             if ( farTiles.length > 0 ) {
                 target = farTiles[ Math.floor( Math.random() * farTiles.length ) ];
             } else if ( walkable.length > 0 ) {
@@ -209,7 +209,7 @@ export class AStarMove extends PlanBase {
                 if (move == 'up')    blockY += 1;
                 if (move == 'down')  blockY -= 1;
 
-                temporaryBlocks.set(`${blockX}_${blockY}`, Date.now() + 1000);
+                temporaryBlocks.set(`${blockX}_${blockY}`, Date.now() + 2000);
 
                 // await new Promise(res => setTimeout(res, 100));
                 continue;
@@ -219,11 +219,12 @@ export class AStarMove extends PlanBase {
             // interrupting the current plan. Uses the confirmed position from the move result.
             const { x: newX, y: newY } = result;
             const carried = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id );
-            if ( carried.length < gameConfig.GAME.player.capacity ) {
+            if ( carried.length < CAPACITY ) {
                 const parcelOnTile = Array.from( parcels.values() ).some(
                     p => !p.carriedBy &&
                          Math.round( p.x ) === Math.round( newX ) &&
-                         Math.round( p.y ) === Math.round( newY )
+                         Math.round( p.y ) === Math.round( newY ) &&
+                         p.reward < dynamicRules.parcelMaxReward
                 );
                 if ( parcelOnTile ) await socket.emitPickup();
             }

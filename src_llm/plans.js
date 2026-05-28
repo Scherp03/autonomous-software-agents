@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import { socket } from './socket.js';
 import { me, mapBeliefs, spawnTiles, spawnWeights, agents, parcels, gameConfig, temporaryBlocks, CAPACITY, dynamicRules } from './beliefs.js';
 import { distance, weightedRandom } from './utils.js';
-import { astar } from './pathfinding.js';
+import { astar, astarDistance } from './pathfinding.js';
 import { IntentionDeliberation } from './agent.js';
 
 const __dir = dirname( fileURLToPath( import.meta.url ) );
@@ -93,7 +93,7 @@ export class Explore extends PlanBase {
         let target;
 
         if ( spawnTiles.length > 0 ) {
-            const farSpawns = spawnTiles.filter( t => distance(me, t) > 2 );
+            const farSpawns = spawnTiles.filter( t => astarDistance(me, t) > 2 );
             const candidates = farSpawns.length > 0 ? farSpawns : spawnTiles;
             const h     = gameConfig.GAME.player.observation_distance;
             const twoH2 = 2 * h * h;
@@ -107,7 +107,7 @@ export class Explore extends PlanBase {
             target = weightedRandom( candidates, weights );
         } else {
             const walkable = Array.from( mapBeliefs.values() ).filter( t => t.type !== '0' );
-            const farTiles = walkable.filter( t => distance(me, t) > 3 );
+            const farTiles = walkable.filter( t => astarDistance(me, t) > 3 );
             if ( farTiles.length > 0 ) {
                 target = farTiles[ Math.floor( Math.random() * farTiles.length ) ];
             } else if ( walkable.length > 0 ) {
@@ -214,7 +214,7 @@ export class AStarMove extends PlanBase {
                 if (move == 'up')    blockY += 1;
                 if (move == 'down')  blockY -= 1;
 
-                temporaryBlocks.set(`${blockX}_${blockY}`, Date.now() + 1000);
+                temporaryBlocks.set(`${blockX}_${blockY}`, Date.now() + 2000);
 
                 // await new Promise(res => setTimeout(res, 100));
                 continue;
@@ -331,31 +331,3 @@ export class GoToNeighborhood extends PlanBase {
         return true;
     }
 }
-
-// export class GoToBonus extends PlanBase {
-//     static isApplicableTo ( action ) { return action === 'go_to_bonus'; }
-
-//     async execute ( action, x, y ) {
-//         if ( this.stopped ) throw [ 'stopped' ];
-//         await this.subIntention( [ 'go_to', x, y ] );
-        
-//         // Once reached, we can optionally clear the bonus from rules so we don't get stuck in a loop
-//         dynamicRules.bonusTiles.delete(`${x}_${y}`);
-//         return true;
-//     }
-// }
-
-// export class DropOnTile extends PlanBase {
-//     static isApplicableTo ( action ) { return action === 'drop_on_tile'; }
-//     async execute ( action, x, y ) {
-//         if ( this.stopped ) throw [ 'stopped' ];
-//         await this.subIntention( [ 'go_to', x, y ] );
-//         if ( this.stopped ) throw [ 'stopped' ];
-//         await socket.emitPutdown();
-//         dynamicRules.bonusTiles.delete(`${x}_${y}`);
-//         for ( const [ id, p ] of parcels ) {                  
-//             if ( p.carriedBy === me.id ) parcels.delete( id );
-//         }
-//         return true;
-//     }
-// }

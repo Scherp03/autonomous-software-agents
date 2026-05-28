@@ -24,8 +24,8 @@ export const agents = new Map();
 
 export const temporaryBlocks = new Map();
 
-/** @type {{x:number, y:number}} */
-export const mapWidthxHeight = { x: 0, y: 0 };
+/** @type {{x:number, y:number, minX:number, minY:number}} */
+export const mapWidthxHeight = { x: 0, y: 0, minX: 0, minY: 0 };
 
 export const CAPACITY = 10;
 
