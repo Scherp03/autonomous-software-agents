@@ -120,7 +120,7 @@ export class Explore extends PlanBase {
         const dirs = ['up', 'down', 'left', 'right'];
         const randomDir = dirs[Math.floor(Math.random() * dirs.length)];
         await socket.emitMove(randomDir);
-        // await new Promise(res => setTimeout(res, 100)); 
+        await new Promise(res => setTimeout(res, 100)); 
         
         return true;
     }
@@ -190,7 +190,7 @@ export class AStarMove extends PlanBase {
             const path = astar( { x: me.x, y: me.y }, { x: targetX, y: targetY } );
             
             if ( !path || path.length == 0 ) {
-                // await new Promise(res => setTimeout(res, 100)); 
+                await new Promise(res => setTimeout(res, 100)); 
                 throw [ 'no path to', targetX, targetY ]; 
             }
 
@@ -209,7 +209,7 @@ export class AStarMove extends PlanBase {
 
                 temporaryBlocks.set(`${blockX}_${blockY}`, Date.now() + 2000);
 
-                // await new Promise(res => setTimeout(res, 100));
+                await new Promise(res => setTimeout(res, 100));
                 continue;
             }
 
@@ -226,7 +226,7 @@ export class AStarMove extends PlanBase {
                 if ( parcelOnTile ) await socket.emitPickup();
             }
 
-            // await new Promise(res => setTimeout(res, 100));
+            await new Promise(res => setTimeout(res, 100));
         }
 
         return true;

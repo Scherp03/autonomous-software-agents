@@ -1,6 +1,7 @@
 import { watch, readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { socket } from './socket.js';
 
 const __dir = dirname( fileURLToPath( import.meta.url ) );
 export const SLAVE_COMMAND_PATH = join( __dir, '..', 'slave-command.json' );
@@ -29,6 +30,15 @@ function processCommand () {
                 resumeResolver();
                 resumeResolver = null;
             }
+        } else if ( cmd.cmd === 'FREEZE' && agentRef ) {
+            console.log( '[slave-command] FREEZE received.' );
+            agentRef.freeze();
+        } else if ( cmd.cmd === 'UNFREEZE' && agentRef ) {
+            console.log( '[slave-command] UNFREEZE received.' );
+            agentRef.unfreeze();
+        } else if ( cmd.cmd === 'SAY' ) {
+            console.log( `[slave-command] SAY to ${cmd.toId}: ${cmd.message}` );
+            socket.emitAsk( cmd.toId, cmd.message );
         }
     } catch ( e ) {
         console.error( '[slave-command] Failed to parse:', e.message );

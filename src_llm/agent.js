@@ -4,18 +4,36 @@ import { distance, parseMs } from './utils.js';
 import { optionsGeneration } from './index.js'; 
 
 export class IntentionRevision {
-    
+
     /** @type {IntentionDeliberation[]} */
     #intention_queue = [];
     get intention_queue () { return this.#intention_queue; }
 
+    #frozen = false;
+    get frozen () { return this.#frozen; }
+
+    freeze () {
+        this.#frozen = true;
+        if ( this.#intention_queue.length > 0 ) this.#intention_queue[0].stop();
+        console.log( '[agent] Frozen.' );
+    }
+
+    unfreeze () {
+        this.#frozen = false;
+        console.log( '[agent] Unfrozen.' );
+    }
+
     async loop () {
         while ( true ) {
+            while ( this.#frozen ) {
+                await new Promise( res => setTimeout( res, 200 ) );
+            }
+
             if ( this.intention_queue.length > 0 ) {
                 const intention = this.intention_queue[0];
 
                 console.log( 'intentionRevision.loop', this.intention_queue.map(i=>i.predicate) );
-                // Execution wrapped safely. 
+                // Execution wrapped safely.
                 // Plans should validate their own targets before/during execution.
                 try {
                     await intention.achieve();
@@ -159,8 +177,10 @@ export class IntentionRevisionRevise extends IntentionRevision {
      * @param { [string, ...any] } predicate is in the form ['go_to', x, y]
      */
     async push ( predicate ) {
+        if ( this.frozen ) return;
+
         // console.log( 'Revising intention queue. Received', ...predicate );
-        
+
         // 1. Evaluate validity of intention
         const utility = this.getUtility( predicate );
         if ( utility < 0 ) {
