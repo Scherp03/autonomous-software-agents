@@ -158,6 +158,20 @@ function set_neighborhood_mission(input) {
     return `Neighborhood mission started: ${tiles.length} walkable tiles around (${cx},${cy}) with radius ${radius}, pts=${effectivePts}.`;
 }
 
+function freeze_agents() {
+    writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'FREEZE' } ) );
+    if ( selfAgentRef ) selfAgentRef.freeze();
+    console.log( '[freeze] Both agents frozen.' );
+    return 'Both agents are now frozen and will stop moving.';
+}
+
+function unfreeze_agents() {
+    writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'UNFREEZE' } ) );
+    if ( selfAgentRef ) selfAgentRef.unfreeze();
+    console.log( '[unfreeze] Both agents unfrozen.' );
+    return 'Both agents are now unfrozen and will resume normal operation.';
+}
+
 async function calculate(expression) {
   console.log("---- CALCULATE ----");
 
@@ -166,6 +180,7 @@ async function calculate(expression) {
     const preamble = 'const {abs,ceil,floor,round,sqrt,min,max,pow,log,PI}=Math;';
     const result = String(eval(preamble + expression));
     await socket.emitAsk( currentSenderId, result );
+    writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'SAY', toId: currentSenderId, message: result } ) );
     return result;
   } catch (error) {
     return `Error: ${error.message}`;
@@ -208,9 +223,10 @@ async function get_current_time(location) {
     const formattedDate = `${map.year}-${map.month}-${map.day}`;
     const formattedTime = `${map.hour}:${map.minute}:${map.second}`;
 
-    await socket.emitAsk( currentSenderId, `The current local time in ${config.city} is ${formattedDate} ${formattedTime} (${config.timeZone}).` );
-
-    return `The current local time in ${config.city} is ${formattedDate} ${formattedTime} (${config.timeZone}).`;
+    const timeMessage = `The current local time in ${config.city} is ${formattedDate} ${formattedTime} (${config.timeZone}).`;
+    await socket.emitAsk( currentSenderId, timeMessage );
+    writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'SAY', toId: currentSenderId, message: timeMessage } ) );
+    return timeMessage;
   } catch (error) {
     return `Error: ${error.message}`;
   }
@@ -232,6 +248,8 @@ const TOOLS = {
     set_parcel_filter,
     set_location_rule,
     set_neighborhood_mission,
+    freeze_agents,
+    unfreeze_agents,
     genericResponse
 };
 // ==========================================
@@ -327,6 +345,8 @@ Available tools:
 - set_parcel_filter(maxReward): instructs the agent to wait to deliver and/or pick up parcels until their reward decays to maxReward or below. Input format: "maxReward" (e.g., "10")
 - set_location_rule(params): Configures point allocations or route bans based on spatial regions or tiles. Input format: "target, pts, mustDrop" where target is a coordinate pair 'x, y' or edge terms ('leftmost', 'rightmost', 'top', 'bottom'), pts is an integer value, and mustDrop is a boolean (true if the agent must drop a package, false if it just needs to visit. If not specified, it defaults to false). (e.g., "0, 0, 10, true" or "leftmost, -10, false").
 - set_neighborhood_mission(params): Sends BOTH agents to a neighborhood (area around a map position). Both agents independently navigate to the nearest free tile within the area and wait for each other before resuming. Input format: "cx, cy, radius, pts" where cx/cy is the center coordinate, radius is the Manhattan distance radius, and pts is the bonus points (default 500). (e.g., "5, 5, 3, 500").
+- freeze_agents(): Immediately stops BOTH agents. They will not move or pick up parcels until unfrozen. No input required.
+- unfreeze_agents(): Resumes normal operation for BOTH agents after a freeze. No input required.
 - genericResponse(): if the user request cannot be fulfilled with the available tools, call this to return a generic response to the user without making any configuration changes.
 Rules:
 - Return ONLY valid JSON.
@@ -361,6 +381,8 @@ Available tools:
 - set_parcel_filter(maxReward) -> format: "maxReward"
 - set_location_rule(params) -> format: "target, pts, mustDrop" where target is a coordinate pair 'x, y' or edge terms ('leftmost', 'rightmost', 'top', 'bottom'), pts is an integer value, and mustDrop is a boolean (true to drop, false to visit).
 - set_neighborhood_mission(params) -> format: "cx, cy, radius, pts" — sends both agents to the area around (cx,cy) within Manhattan radius. Both wait for each other then resume.
+- freeze_agents() -> no input — immediately stops both agents. They will not move until unfrozen.
+- unfreeze_agents() -> no input — resumes both agents after a freeze.
 - genericResponse() -> no input, returns a generic fallback response to the user without making any configuration changes.
 
 You receive:
@@ -429,13 +451,17 @@ const messages = [
 // ==========================================
 
 async function createPlan(userInput) {
+  // Fix 3: append live agent state to the system prompt
+  const frozenState = selfAgentRef?.frozen ? 'frozen (both agents are currently stopped)' : 'moving (both agents are currently active)';
+  const stateNote = `\n\nCurrent agent state: ${frozenState}`;
+
+  // Fix 1: inject conversation history so the planner has context from prior turns
   const plannerMessages = [
     {
       role: "system",
-      // content: PLANNER_PROMPT + `\n\nCurrent state: x=${me.x}, y=${me.y}`,
-      content: PLANNER_PROMPT,
-
+      content: PLANNER_PROMPT + stateNote,
     },
+    ...messages.slice(1),   // history: alternating user/assistant turns (skip system placeholder)
     {
       role: "user",
       content: userInput,
@@ -470,6 +496,8 @@ async function createPlan(userInput) {
 // ==========================================
 
 async function executeStep(step, context, maxStepIterations = 4) {
+  const toolsCalled = [];
+
   const stepMessages = [
     {
       role: "system",
@@ -537,6 +565,7 @@ async function executeStep(step, context, maxStepIterations = 4) {
 
       if (TOOLS[action]) {
         console.log(`[System executing tool: ${action}("${actionInput}")]`);
+        toolsCalled.push(action);
         observation = await TOOLS[action](actionInput);
       } else {
         observation =
@@ -564,6 +593,7 @@ async function executeStep(step, context, maxStepIterations = 4) {
       return {
         success: true,
         result: stepResult,
+        toolsCalled,
       };
     }
 
@@ -581,6 +611,7 @@ async function executeStep(step, context, maxStepIterations = 4) {
   return {
     success: false,
     result: `Step could not be completed: ${step}`,
+    toolsCalled,
   };
 }
 
@@ -615,7 +646,7 @@ async function buildFinalAnswer(userInput, plan, completedResults) {
 // ==========================================
 
 async function runAgentTurn(userInput) {
-  // 1. Create a plan
+  // 1. Create a plan (Fix 1+3: inject history and live agent state)
   const plan = await createPlan(userInput);
 
   console.log("=== PLAN ===");
@@ -626,6 +657,7 @@ async function runAgentTurn(userInput) {
 
   // 2. Execute each planned step explicitly
   const completedResults = [];
+  const allToolsCalled = [];
 
   for (const step of plan.steps) {
     const execution = await executeStep(step, {
@@ -635,6 +667,7 @@ async function runAgentTurn(userInput) {
     });
 
     completedResults.push(execution.result);
+    if (execution.toolsCalled) allToolsCalled.push(...execution.toolsCalled);
   }
 
   console.log("=== STEP RESULTS ===");
@@ -651,18 +684,24 @@ async function runAgentTurn(userInput) {
   if (genericAnwer) {
     console.log("[Note: the assistant returned a generic response, likely because the user's request could not be fulfilled with the available tools.]\n");
     genericAnwer = false;
+    await socket.emitAsk( currentSenderId, finalAnswer );
+    writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'SAY', toId: currentSenderId, message: finalAnswer } ) );
   }
-  await socket.emitAsk( currentSenderId, finalAnswer );
+  // await socket.emitAsk( currentSenderId, finalAnswer );
 
-  // 4. Store only visible conversation
+  // 4. Store conversation with tool log prepended (Fix 2)
   messages.push({
     role: "user",
     content: userInput,
   });
 
+  const uniqueTools = [ ...new Set( allToolsCalled ) ];
+  const toolPrefix = uniqueTools.length > 0
+      ? `[Actions taken: ${uniqueTools.join(', ')}]\n\n`
+      : '';
   messages.push({
     role: "assistant",
-    content: finalAnswer,
+    content: toolPrefix + finalAnswer,
   });
 
   // Sliding Window Memory Pruning
@@ -673,7 +712,6 @@ async function runAgentTurn(userInput) {
     messages.splice(1, excess);
     console.log(`[Memory] Auto-pruned the ${excess} oldest messages to prevent context overflow.`);
   }
-  
 }
 
 // ==========================================
@@ -694,8 +732,10 @@ socket.onMsg(async (id, name, msg) => {
 
   // if (id != ADMIN_ID && name.toLowerCase() != ADMIN_NAME) {
   //   console.log(`[Blocked] Ignored message from ${name} (${id}): ${msg}`);
-  //   return; 
+  //   return;
   // }
+
+  currentSenderId = id;
 
   console.log(`=== COMMAND FROM ${name} (${id}) ===`);
   console.log(`Message: ${msg}\n`);
