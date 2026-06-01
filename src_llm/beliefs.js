@@ -26,6 +26,8 @@ export const agents = new Map();
 
 export const temporaryBlocks = new Map();
 
+export const failureCounters = new Map();
+
 /**
  * Parzen window weight for each spawn tile, keyed by 'x_y'.
  * Recomputed whenever the map is updated. Used by Explore for weighted sampling.

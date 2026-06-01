@@ -1,5 +1,5 @@
 import { socket } from './socket.js';
-import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig } from './beliefs.js';
+import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, failureCounters, CAPACITY, temporaryBlocks } from './beliefs.js';
 import { distance } from './utils.js';
 import { IntentionRevisionRevise } from './agent.js';
 import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary } from './plans.js';
@@ -32,7 +32,12 @@ socket.onYou( ( {id, name, x, y, score} ) => {
     me.x     = x ?? me.x;
     me.y     = y ?? me.y;
     me.score = score;
+
+    const key = `${me.x}_${me.y}`;
+    if (failureCounters.has(key)) failureCounters.set(key, 0);
+
 } );
+
 
 function updateTileBelief( x, y, type ) {
     const t = type.toString();
@@ -110,7 +115,13 @@ export function optionsGeneration () {
 
     // Propose delivery to the nearest tile if carrying anything
     if ( carried.length > 0 && deliveryTiles.length > 0 ) {
-        const nearestDelivery = deliveryTiles.reduce( (best, t) => {
+        const nearestDelivery = deliveryTiles
+        .filter( t => {
+            const key = `${t.x}_${t.y}`;
+            const isTempBlocked = temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now();
+            return !isTempBlocked; 
+        })
+        .reduce( (best, t) => {
             const d = distance( me, t );
             return d < best.d ? { t, d } : best;
         }, { t: null, d: Infinity } ).t;
@@ -121,8 +132,14 @@ export function optionsGeneration () {
 
     // Propose each available parcel as a pickup, unless already at capacity
     // or another visible agent is strictly closer to that parcel
-    if ( carried.length < gameConfig.GAME.player.capacity ) {
+    if ( carried.length < CAPACITY ) {
         for ( const p of available ) {
+
+            // Ignore parcels on frustrated tiles
+            const key = `${Math.round(p.x)}_${Math.round(p.y)}`;
+            // if (frustrationBlocks.has(key) && frustrationBlocks.get(key) > Date.now()) continue;
+            if (temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now()) continue;
+            
             const closerAgentExists = Array.from( agents.values() ).some(
                 a => distance( a, p ) < distance( me, p )
             );
