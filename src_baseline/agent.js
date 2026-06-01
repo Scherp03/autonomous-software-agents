@@ -74,6 +74,94 @@ export class IntentionRevisionReplace extends IntentionRevision {
     }
 }
 
+export class IntentionRevisionRevise extends IntentionRevision {
+
+    /**
+     * Helper method to evaluate the validity and utility of an intention.
+     * Utility is calculated as: Reward - Cost (distance).
+     * Returns -1 if the intention is invalid.
+     */
+    getUtility ( predicate ) {
+        const [ action, x, y, id ] = predicate;
+        
+        if ( action === 'go_deliver' ) {
+            // Delivering is critical. High base reward minus distance cost.
+            return 1000 - distance( me, { x, y } );
+        }
+        
+        if ( action === 'go_pick_up' ) {
+            const parcel = parcels.get( id );
+            
+            // EVALUATE VALIDITY: If parcel disappeared or is carried by someone else, it's invalid.
+            if ( !parcel || ( parcel.carriedBy && parcel.carriedBy !== me.id ) ) {
+                return -1; 
+            }
+            
+            // UTILITY: Parcel score (reward) minus distance (cost)
+            return parcel.reward - distance( me, { x, y } );
+        }
+        
+        if ( action === 'explore' ) {
+            // Exploring is the lowest priority fallback.
+            return 0;
+        }
+        
+        return -1; // Unknown intention
+    }
+
+    /**
+     * @param { [string, ...any] } predicate is in the form ['go_to', x, y]
+     */
+    async push ( predicate ) {
+        console.log( 'Revising intention queue. Received', ...predicate );
+        
+        // 1. Evaluate validity of intention
+        const utility = this.getUtility( predicate );
+        if ( utility < 0 ) {
+            console.log( '\tIntention rejected (invalid or low utility):', ...predicate );
+            return; 
+        }
+
+        // Check if this exact intention is already in the queue to avoid duplicates
+        const isDuplicate = this.intention_queue.some( 
+            i => i.predicate.join(' ') === predicate.join(' ') 
+        );
+        if ( isDuplicate ) {
+            return; 
+        }
+
+        // Create and push the new intention
+        const newIntention = new IntentionDeliberation( this, predicate );
+        this.intention_queue.push( newIntention );
+
+        // Keep a reference to what is currently executing
+        const currentTop = this.intention_queue[0];
+
+        // 2. Order intentions based on utility function (Highest utility first)
+        this.intention_queue.sort( ( a, b ) => {
+            return this.getUtility( b.predicate ) - this.getUtility( a.predicate );
+        } );
+
+        // 3. Eventually stop current one if preempted
+        const newTop = this.intention_queue[0];
+        
+        // If sorting changed the top of the queue, the current plan is no longer the highest priority
+        if ( currentTop && currentTop !== newTop && !currentTop.stopped ) {
+            console.log( '\tPreempting current intention for a higher utility one.' );
+            
+            // Stop the executing plan
+            currentTop.stop();
+            
+            // Prune the stopped intention from the queue so it doesn't linger as a dead object
+            const index = this.intention_queue.indexOf( currentTop );
+            if ( index > -1 ) {
+                this.intention_queue.splice( index, 1 );
+            }
+        }
+    }
+}
+
+
 /**
  * @typedef { {
  *      stop: ()=>void,

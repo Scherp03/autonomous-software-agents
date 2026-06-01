@@ -2,7 +2,7 @@ import { socket } from './socket.js';
 import { me, mapBeliefs, deliveryTiles, spawnTiles, parcels } from './beliefs.js';
 import { distance } from './utils.js';
 import { IntentionRevisionReplace } from './agent.js';
-import { GoPickUp, GoDeliver, BfsMove, Explore, planLibrary } from './plans.js';
+import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary } from './plans.js';
 
 // ─── Belief Revision (Socket Listeners) ──────────────────────────────────────
 socket.onYou( ( {id, name, x, y, score} ) => {
@@ -95,5 +95,5 @@ myAgent.loop();
 
 planLibrary.push( GoPickUp );
 planLibrary.push( GoDeliver );
-planLibrary.push( BfsMove );
+planLibrary.push( AStarMove );
 planLibrary.push( Explore );
