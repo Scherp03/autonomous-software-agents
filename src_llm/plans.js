@@ -300,6 +300,35 @@ export class DropOnTile extends PlanBase {
     }
 }
 
+export class GoToMatchingTile extends PlanBase {
+    static isApplicableTo ( action ) { return action === 'go_to_matching_tile'; }
+
+    async execute ( action, condition, pts ) {
+        if ( this.stopped ) throw [ 'stopped' ];
+
+        let fn;
+        try { fn = new Function( 'x', 'y', `return !!(${condition})` ); }
+        catch ( e ) { throw [ `go_to_matching_tile: invalid condition: ${condition}` ]; }
+
+        const candidates = Array.from( mapBeliefs.values() )
+            .filter( t => t.type !== '0' && fn( t.x, t.y ) )
+            .sort( ( a, b ) => astarDistance( me, a ) - astarDistance( me, b ) );
+
+        if ( candidates.length === 0 )
+            throw [ `go_to_matching_tile: no walkable tiles match: ${condition}` ];
+
+        for ( const target of candidates ) {
+            if ( this.stopped ) throw [ 'stopped' ];
+            try {
+                await this.subIntention( [ 'go_to', target.x, target.y ] );
+                return true;
+            } catch ( _ ) {}
+        }
+
+        throw [ 'go_to_matching_tile: could not reach any matching tile' ];
+    }
+}
+
 export class GoToNeighborhood extends PlanBase {
     static isApplicableTo ( action ) { return action === 'go_to_neighborhood'; }
 

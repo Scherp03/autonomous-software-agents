@@ -1,9 +1,9 @@
 import "dotenv/config";
 import OpenAI from "openai";
-import { writeFileSync } from "fs";
+import { writeFileSync, readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { ADMIN_ID, ADMIN_NAME, dynamicRules, mapBeliefs } from "./beliefs.js";
+import { ADMIN_ID, ADMIN_NAME, dynamicRules, mapBeliefs, me } from "./beliefs.js";
 import { socket } from "./socket.js";
 
 const __dir = dirname( fileURLToPath( import.meta.url ) );
@@ -161,6 +161,66 @@ function set_neighborhood_mission(input) {
     return `Neighborhood mission started: ${tiles.length} walkable tiles around (${cx},${cy}) with radius ${radius}, pts=${effectivePts}.`;
 }
 
+function move_to_matching_tile(input) {
+    // Input: "condition" or "condition, pts" — pts is optional, defaults to 500
+    // Split on last comma to avoid breaking conditions like "x == 0 || y == 0"
+    const lastComma = input.lastIndexOf(',');
+    let condition, pts;
+    if (lastComma !== -1) {
+        const afterComma = input.slice(lastComma + 1).trim();
+        const parsedPts = Number(afterComma);
+        if (!isNaN(parsedPts)) {
+            condition = input.slice(0, lastComma).trim();
+            pts = parsedPts;
+        } else {
+            condition = input.trim();
+            pts = 500;
+        }
+    } else {
+        condition = input.trim();
+        pts = 500;
+    }
+
+    // Validate condition before sending anywhere
+    try { new Function('x', 'y', `return !!(${condition})`); }
+    catch (e) { return `Error: invalid condition "${condition}": ${e.message}`; }
+
+    writeFileSync(SLAVE_STATUS_PATH, JSON.stringify({ conditionMet: false }));
+    writeFileSync(SLAVE_COMMAND_PATH, JSON.stringify({ cmd: 'GO_TO_MATCHING_TILE', condition, pts }));
+    if (selfAgentRef) selfAgentRef.pushUrgent(['go_to_matching_tile', condition, pts]);
+
+    return `Both agents commanded to move to nearest tile where: ${condition} (pts=${pts})`;
+}
+
+async function wait_both_at_condition(input) {
+    const condition = input.trim();
+    let fn;
+    try { fn = new Function('x', 'y', `return !!(${condition})`); }
+    catch (e) { return `Error: invalid condition "${condition}": ${e.message}`; }
+
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline) {
+        const selfMet = fn(Math.round(me.x), Math.round(me.y));
+
+        let slaveMet = false, slavePos = null;
+        try {
+            if (existsSync(SLAVE_STATUS_PATH)) {
+                const s = JSON.parse(readFileSync(SLAVE_STATUS_PATH, 'utf8'));
+                if (s.conditionMet === true && s.condition === condition) {
+                    slaveMet = true;
+                    slavePos = { x: s.x, y: s.y };
+                }
+            }
+        } catch (_) {}
+
+        if (selfMet && slaveMet)
+            return `Both agents satisfy "${condition}". Self (${Math.round(me.x)},${Math.round(me.y)}), slave (${slavePos.x},${slavePos.y}).`;
+
+        await new Promise(r => setTimeout(r, 200));
+    }
+    return `Timeout: not both agents satisfied "${condition}" within 60s.`;
+}
+
 function freeze_agents() {
     writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'FREEZE' } ) );
     if ( selfAgentRef ) selfAgentRef.freeze();
@@ -251,6 +311,8 @@ const TOOLS = {
     set_parcel_filter,
     set_location_rule,
     set_neighborhood_mission,
+    move_to_matching_tile,
+    wait_both_at_condition,
     freeze_agents,
     unfreeze_agents,
     genericResponse
@@ -348,9 +410,11 @@ Available tools:
 - set_parcel_filter(maxReward): instructs the agent to wait to deliver and/or pick up parcels until their reward decays to maxReward or below. Input format: "maxReward" (e.g., "10")
 - set_location_rule(params): Configures point allocations or route bans based on spatial regions or tiles. Input format: "target, pts, mustDrop" where target is a coordinate pair 'x, y' or edge terms ('leftmost', 'rightmost', 'top', 'bottom'), pts is an integer value, and mustDrop is a boolean (true if the agent must drop a package, false if it just needs to visit. If not specified, it defaults to false). (e.g., "0, 0, 10, true" or "leftmost, -10, false").
 - set_neighborhood_mission(params): Sends BOTH agents to a neighborhood (area around a map position). Both agents independently navigate to the nearest free tile within the area and wait for each other before resuming. Input format: "cx, cy, radius, pts" where cx/cy is the center coordinate, radius is the Manhattan distance radius, and pts is the bonus points (default 500). (e.g., "5, 5, 3, 500").
-- genericResponse(): if the user request cannot be fulfilled with the available tools, call this to return a generic response to the user without making any configuration changes. Let the answer be very concise and straight to the point.
+- move_to_matching_tile(params): Sends BOTH agents to the nearest tile each satisfying a JS condition on x and y. Each agent independently picks its own nearest matching tile. Input format: "condition, pts" where condition is a JS boolean expression on x and y, and pts is the bonus/penalty value (default 500, negative = command ignored). (e.g., "y % 2 == 1, 700"). Always follow with wait_both_at_condition before freeze_agents.
+- wait_both_at_condition(condition): Blocks until BOTH agents are confirmed on a tile satisfying the condition. Must be called after move_to_matching_tile and before freeze_agents. Input: same condition string (e.g., "y % 2 == 1"). Times out after 60s.
 - freeze_agents(): Immediately stops BOTH agents. They will not move or pick up parcels until unfrozen. No input required.
 - unfreeze_agents(): Resumes normal operation for BOTH agents after a freeze. No input required.
+- genericResponse(): if the user request cannot be fulfilled with the available tools, call this to return a generic response to the user without making any configuration changes. Let the answer be very concise and straight to the point.
 Rules:
 - Return ONLY valid JSON.
 - Do not use markdown.
@@ -384,9 +448,11 @@ Available tools:
 - set_parcel_filter(maxReward) -> format: "maxReward"
 - set_location_rule(params) -> format: "target, pts, mustDrop" where target is a coordinate pair 'x, y' or edge terms ('leftmost', 'rightmost', 'top', 'bottom'), pts is an integer value, and mustDrop is a boolean (true to drop, false to visit).
 - set_neighborhood_mission(params) -> format: "cx, cy, radius, pts" — sends both agents to the area around (cx,cy) within Manhattan radius. Both wait for each other then resume.
-- genericResponse() -> no input, returns a generic fallback response to the user without making any configuration changes. Concise and straight to the point.
+- move_to_matching_tile(params) -> format: "condition, pts" — sends both agents to their nearest tile satisfying a JS boolean on x/y (e.g., "y % 2 == 1, 700"). pts negative = command ignored. Always follow with wait_both_at_condition.
+- wait_both_at_condition(condition) -> format: same condition string as move_to_matching_tile — blocks until both agents are on a matching tile, then returns. Times out after 60s.
 - freeze_agents() -> no input — immediately stops both agents. They will not move until unfrozen.
 - unfreeze_agents() -> no input — resumes both agents after a freeze.
+- genericResponse() -> no input, returns a generic fallback response to the user without making any configuration changes. Concise and straight to the point.
 
 You receive:
 - the original user request
@@ -727,7 +793,7 @@ console.log("Only accepting commands from player id: 'admin'.\n");
 
 // Reset all shared files so both agents start from a clean state
 writeSharedConfig();
-writeFileSync( SLAVE_STATUS_PATH,  JSON.stringify( { arrived: false }, null, 2 ) );
+writeFileSync( SLAVE_STATUS_PATH,  JSON.stringify( { arrived: false, conditionMet: false }, null, 2 ) );
 writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( {} ) );
 
 socket.onMsg(async (id, name, msg) => {

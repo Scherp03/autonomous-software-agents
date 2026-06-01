@@ -143,6 +143,7 @@ export class IntentionRevisionRevise extends IntentionRevision {
             return revisedUtility;
         }
 
+        if ( action === 'go_to_matching_tile' ) return predicate[2] ?? 500;
         if ( action === 'go_to_neighborhood' ) return predicate[2] ?? 500;
 
         if ( action === 'explore' ) return 0;
@@ -220,7 +221,7 @@ export class IntentionRevisionRevise extends IntentionRevision {
             this.intention_queue.splice( 0, 1 );
         }
         for ( let i = this.intention_queue.length - 1; i >= 0; i-- ) {
-            if ( this.intention_queue[ i ].predicate[ 0 ] === 'go_to_neighborhood' ) {
+            if ( [ 'go_to_neighborhood', 'go_to_matching_tile' ].includes( this.intention_queue[ i ].predicate[ 0 ] ) ) {
                 this.intention_queue[ i ].stop();
                 this.intention_queue.splice( i, 1 );
             }

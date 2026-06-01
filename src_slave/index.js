@@ -3,7 +3,7 @@ import { socket } from './socket.js';
 import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, mapWidthxHeight, CAPACITY, dynamicRules, temporaryBlocks, failureCounters } from './beliefs.js';
 import { distance } from './utils.js';
 import { IntentionRevisionRevise } from './agent.js';
-import { GoPickUp, GoDeliver, AStarMove, Explore, GoToBonus, DropOnTile, GoToNeighborhood, planLibrary } from './plans.js';
+import { GoPickUp, GoDeliver, AStarMove, Explore, GoToBonus, DropOnTile, GoToMatchingTile, GoToNeighborhood, planLibrary } from './plans.js';
 import './config-sync.js';
 import { setAgent, SLAVE_STATUS_PATH } from './slave-command.js';
 
@@ -273,6 +273,7 @@ writeFileSync( SLAVE_STATUS_PATH, JSON.stringify( { arrived: false }, null, 2 ) 
 
 myAgent.loop();
 
+planLibrary.push( GoToMatchingTile );
 planLibrary.push( GoToNeighborhood );
 planLibrary.push( GoToBonus );
 planLibrary.push( DropOnTile );

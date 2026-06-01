@@ -2,7 +2,7 @@ import { socket } from './socket.js';
 import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, dynamicRules, mapWidthxHeight, CAPACITY, temporaryBlocks, failureCounters } from './beliefs.js';
 import { distance } from './utils.js';
 import { IntentionRevisionRevise } from './agent.js';
-import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary, GoToBonus, DropOnTile, GoToNeighborhood } from './plans.js';
+import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary, GoToBonus, DropOnTile, GoToMatchingTile, GoToNeighborhood } from './plans.js';
 
 import { setSelfAgent } from './llm.js';
 
@@ -294,6 +294,7 @@ setSelfAgent( myAgent );
 
 myAgent.loop();
 
+planLibrary.push( GoToMatchingTile );
 planLibrary.push( GoToNeighborhood );
 planLibrary.push( GoToBonus );
 planLibrary.push( DropOnTile );
