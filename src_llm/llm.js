@@ -3,8 +3,9 @@ import OpenAI from "openai";
 import { writeFileSync, readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { ADMIN_ID, ADMIN_NAME, dynamicRules, mapBeliefs, me } from "./beliefs.js";
+import { ADMIN_ID, ADMIN_NAME, dynamicRules, mapBeliefs, me, parcels, handoffState, mapWidthxHeight } from "./beliefs.js";
 import { socket } from "./socket.js";
+import { distance } from "./utils.js";
 
 const __dir = dirname( fileURLToPath( import.meta.url ) );
 const SHARED_CONFIG_PATH = join( __dir, '..', 'shared-config.json' );
@@ -13,6 +14,30 @@ const SLAVE_STATUS_PATH = join( __dir, '..', 'slave-status.json' );
 
 let selfAgentRef = null;
 export function setSelfAgent ( agent ) { selfAgentRef = agent; }
+
+let handoffConfig = null;
+
+function findHandoffCorridor ( myPos, slavePos ) {
+    const DIRS = [
+        { dx: 1, dy: 0, name: 'right' }, { dx: -1, dy: 0, name: 'left' },
+        { dx: 0, dy: 1, name: 'up' },   { dx: 0, dy: -1, name: 'down' },
+    ];
+    let best = null, bestScore = Infinity;
+    for ( const [ , tile ] of mapBeliefs ) {
+        if ( tile.type === '0' ) continue;
+        for ( const dir of DIRS ) {
+            const T_slave   = { x: tile.x + dir.dx, y: tile.y + dir.dy };
+            const T_retreat = { x: tile.x - dir.dx, y: tile.y - dir.dy };
+            const st = mapBeliefs.get( `${T_slave.x}_${T_slave.y}` );
+            const rt = mapBeliefs.get( `${T_retreat.x}_${T_retreat.y}` );
+            if ( !st || st.type === '0' ) continue;
+            if ( !rt || rt.type === '0' ) continue;
+            const score = distance( myPos, tile ) + distance( slavePos, T_slave );
+            if ( score < bestScore ) { bestScore = score; best = { T_llm: tile, T_slave, T_retreat, dir: dir.name }; }
+        }
+    }
+    return best;
+}
 
 function writeSharedConfig () {
     const snapshot = {
@@ -124,7 +149,7 @@ function set_location_rule(input) {
     }
 }
 
-function set_neighborhood_mission(input) {
+async function set_neighborhood_mission(input) {
     // Input: "cx, cy, radius, pts" — e.g. "5, 5, 3, 500"
     const parts = input.split(',').map(s => Number(s.trim()));
     const [ cx, cy, radius, pts = 500 ] = parts;
@@ -151,17 +176,36 @@ function set_neighborhood_mission(input) {
 
     const effectivePts = isNaN(pts) ? 500 : pts;
 
+    // Reset completion flag before sending so a stale true from a previous call doesn't fire immediately
+    try {
+        const prev = existsSync( SLAVE_STATUS_PATH ) ? JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) ) : {};
+        writeFileSync( SLAVE_STATUS_PATH, JSON.stringify( { ...prev, neighborhoodDone: false }, null, 2 ) );
+    } catch ( _ ) {}
+
     // Send command to slave agent via file
     writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'GO_TO_NEIGHBORHOOD', tiles, pts: effectivePts }, null, 2 ) );
 
     // Push to self (LLM) agent
-    if ( selfAgentRef ) selfAgentRef.push( [ 'go_to_neighborhood', tiles, effectivePts ] );
+    if ( selfAgentRef ) selfAgentRef.pushUrgent( [ 'go_to_neighborhood', tiles, effectivePts ] );
 
     console.log( `[neighborhood] Mission started: ${tiles.length} tiles around (${cx},${cy}), pts=${effectivePts}` );
-    return `Neighborhood mission started: ${tiles.length} walkable tiles around (${cx},${cy}) with radius ${radius}, pts=${effectivePts}.`;
+
+    // Block until GoToNeighborhood plan completes on both sides (writes neighborhoodDone: true after RESUME)
+    const deadline = Date.now() + 90000;
+    while ( Date.now() < deadline ) {
+        try {
+            if ( existsSync( SLAVE_STATUS_PATH ) ) {
+                const s = JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) );
+                if ( s.neighborhoodDone === true )
+                    return `Neighborhood mission complete: both agents reached area around (${cx},${cy}).`;
+            }
+        } catch ( _ ) {}
+        await new Promise( r => setTimeout( r, 200 ) );
+    }
+    return `Timeout: neighborhood mission around (${cx},${cy}) did not complete within 90s.`;
 }
 
-function move_to_matching_tile(input) {
+async function move_to_matching_tile(input) {
     // Input: "condition" or "condition, pts" — pts is optional, defaults to 500
     // Split on last comma to avoid breaking conditions like "x == 0 || y == 0"
     const lastComma = input.lastIndexOf(',');
@@ -182,14 +226,69 @@ function move_to_matching_tile(input) {
     }
 
     // Validate condition before sending anywhere
-    try { new Function('x', 'y', `return !!(${condition})`); }
+    let fn;
+    try { fn = new Function('x', 'y', `return !!(${condition})`); }
     catch (e) { return `Error: invalid condition "${condition}": ${e.message}`; }
 
-    writeFileSync(SLAVE_STATUS_PATH, JSON.stringify({ conditionMet: false }));
+    try {
+        const prev = existsSync( SLAVE_STATUS_PATH ) ? JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) ) : {};
+        writeFileSync( SLAVE_STATUS_PATH, JSON.stringify( { ...prev, conditionMet: false }, null, 2 ) );
+    } catch ( _ ) {}
     writeFileSync(SLAVE_COMMAND_PATH, JSON.stringify({ cmd: 'GO_TO_MATCHING_TILE', condition, pts }));
     if (selfAgentRef) selfAgentRef.pushUrgent(['go_to_matching_tile', condition, pts]);
 
-    return `Both agents commanded to move to nearest tile where: ${condition} (pts=${pts})`;
+    // Block until both agents have arrived
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline) {
+        const selfMet = fn(Math.round(me.x), Math.round(me.y));
+        let slaveMet = false, slavePos = null;
+        try {
+            if (existsSync(SLAVE_STATUS_PATH)) {
+                const s = JSON.parse(readFileSync(SLAVE_STATUS_PATH, 'utf8'));
+                if (s.conditionMet === true && s.condition === condition) {
+                    slaveMet = true;
+                    slavePos = { x: s.x, y: s.y };
+                }
+            }
+        } catch (_) {}
+        if (selfMet && slaveMet)
+            return `Both agents at "${condition}". Self (${Math.round(me.x)},${Math.round(me.y)}), slave (${slavePos.x},${slavePos.y}).`;
+        await new Promise(r => setTimeout(r, 200));
+    }
+    return `Timeout: agents did not reach "${condition}" within 60s.`;
+}
+
+async function move_to_edge ( input ) {
+    const pts = Number( input.trim() ) || 500;
+
+    // Reset arrival flag before issuing the command
+    try {
+        const prev = existsSync( SLAVE_STATUS_PATH ) ? JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) ) : {};
+        writeFileSync( SLAVE_STATUS_PATH, JSON.stringify( { ...prev, edgeArrived: false }, null, 2 ) );
+    } catch ( _ ) {}
+
+    writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'MOVE_TO_EDGE', pts } ) );
+    if ( selfAgentRef ) selfAgentRef.pushUrgent( [ 'go_to_edge', pts ] );
+    console.log( `[move_to_edge] Both agents commanded to map border (pts=${pts})` );
+
+    // Block until both agents have reached a border tile
+    const { x: maxX, y: maxY, minX, minY } = mapWidthxHeight;
+    const deadline = Date.now() + 60000;
+    while ( Date.now() < deadline ) {
+        const x = Math.round( me.x ), y = Math.round( me.y );
+        const selfAtEdge = x === minX || x === maxX || y === minY || y === maxY;
+        let slaveAtEdge = false;
+        try {
+            if ( existsSync( SLAVE_STATUS_PATH ) ) {
+                const s = JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) );
+                slaveAtEdge = s.edgeArrived === true;
+            }
+        } catch ( _ ) {}
+        if ( selfAtEdge && slaveAtEdge )
+            return `Both agents at map border. Self (${x},${y}).`;
+        await new Promise( r => setTimeout( r, 200 ) );
+    }
+    return `Timeout: agents did not reach map border within 60s.`;
 }
 
 async function wait_both_at_condition(input) {
@@ -230,9 +329,24 @@ function freeze_agents() {
 
 function unfreeze_agents() {
     writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'UNFREEZE' } ) );
-    if ( selfAgentRef ) selfAgentRef.unfreeze();
+    if ( selfAgentRef ) {
+        const q = selfAgentRef.intention_queue;
+        if ( q.length > 0 && [ 'go_to_edge', 'go_to_matching_tile', 'go_to_neighborhood' ].includes( q[0].predicate[0] ) ) {
+            q[0].stop();
+        }
+        selfAgentRef.unfreeze();
+    }
     console.log( '[unfreeze] Both agents unfrozen.' );
     return 'Both agents are now unfrozen and will resume normal operation.';
+}
+
+function setup_handoff_pipeline ( input ) {
+    const parts = input.split( ',' ).map( s => Number( s.trim() ) );
+    const [ bonus_pts, threshold = 3 ] = parts;
+    if ( isNaN( bonus_pts ) ) return 'Error: invalid bonus_pts.';
+    handoffConfig = { bonus_pts, threshold };
+    console.log( `[handoff] Pipeline configured: bonus=${bonus_pts}, threshold=${threshold}` );
+    return `Handoff pipeline active. Will trigger when combined carried parcels ≥ ${threshold}. Bonus: ${bonus_pts} pts per handoff parcel.`;
 }
 
 async function calculate(expression) {
@@ -312,9 +426,11 @@ const TOOLS = {
     set_location_rule,
     set_neighborhood_mission,
     move_to_matching_tile,
+    move_to_edge,
     wait_both_at_condition,
     freeze_agents,
     unfreeze_agents,
+    setup_handoff_pipeline,
     genericResponse
 };
 // ==========================================
@@ -398,8 +514,13 @@ function safeJsonParse(text) {
 // ==========================================
 
 const PLANNER_PROMPT = `
-You are the strategic planning module of an AI agent connected to a game environment, called DeliverooJS .
+You are the strategic planning module of an AI agent connected to a game environment, called DeliverooJS.
 The agent moves and operates autonomously. Your job is NOT to move the agent, but to translate user messages about game rules, bonuses, and penalties into configuration steps.
+
+Coordinate system: X increases rightward, Y increases downward (screen coordinates).
+  leftmost  = X = minX  |  rightmost = X = maxX
+  topmost   = Y = minY  |  bottommost = Y = maxY
+The actual map bounds are provided in the state note below.
 
 Available tools:
 - calculate(expression): evaluates a mathematical expression
@@ -410,11 +531,13 @@ Available tools:
 - set_parcel_filter(maxReward): instructs the agent to wait to deliver and/or pick up parcels until their reward decays to maxReward or below. Input format: "maxReward" (e.g., "10")
 - set_location_rule(params): Configures point allocations or route bans based on spatial regions or tiles. Input format: "target, pts, mustDrop" where target is a coordinate pair 'x, y' or edge terms ('leftmost', 'rightmost', 'top', 'bottom'), pts is an integer value, and mustDrop is a boolean (true if the agent must drop a package, false if it just needs to visit. If not specified, it defaults to false). (e.g., "0, 0, 10, true" or "leftmost, -10, false").
 - set_neighborhood_mission(params): Sends BOTH agents to a neighborhood (area around a map position). Both agents independently navigate to the nearest free tile within the area and wait for each other before resuming. Input format: "cx, cy, radius, pts" where cx/cy is the center coordinate, radius is the Manhattan distance radius, and pts is the bonus points (default 500). (e.g., "5, 5, 3, 500").
-- move_to_matching_tile(params): Sends BOTH agents to the nearest tile each satisfying a JS condition on x and y. Each agent independently picks its own nearest matching tile. Input format: "condition, pts" where condition is a JS boolean expression on x and y, and pts is the bonus/penalty value (default 500, negative = command ignored). (e.g., "y % 2 == 1, 700"). Always follow with wait_both_at_condition before freeze_agents.
-- wait_both_at_condition(condition): Blocks until BOTH agents are confirmed on a tile satisfying the condition. Must be called after move_to_matching_tile and before freeze_agents. Input: same condition string (e.g., "y % 2 == 1"). Times out after 60s.
+- move_to_matching_tile(params): Sends BOTH agents to the nearest tile satisfying a JS condition, then blocks until both arrive (up to 60s). Input format: "condition, pts" where condition is a JS boolean expression on x and y, and pts is the bonus/penalty value (default 500, negative = command ignored). (e.g., "y % 2 == 1, 700").
+- move_to_edge(pts): Sends BOTH agents to the nearest walkable tile at ANY map border (unspecified direction), then blocks until both arrive (up to 60s). Input format: "pts" (e.g., "300"). Default pts=500. Use this ONLY when the user does not specify which edge.
 - freeze_agents(): Immediately stops BOTH agents. They will not move or pick up parcels until unfrozen. No input required.
 - unfreeze_agents(): Resumes normal operation for BOTH agents after a freeze. No input required.
+- setup_handoff_pipeline(params): Sets up automatic cross-agent parcel handoff. Monitors both agents; when combined carried parcels reach the threshold, triggers a coordinated exchange so the LLM agent delivers all parcels and earns the cross-agent bonus. Input format: "bonus_pts, threshold" (e.g., "200, 3"). Default threshold=3.
 - genericResponse(): if the user request cannot be fulfilled with the available tools, call this to return a generic response to the user without making any configuration changes. Let the answer be very concise and straight to the point.
+
 Rules:
 - Return ONLY valid JSON.
 - Do not use markdown.
@@ -423,6 +546,18 @@ Rules:
 - Each step must be concrete and executable.
 - If the user uses math to define coordinates (e.g., "x=4*2"), include a step that uses calculate first.
 - If the user mentions a penalty for moving to a tile, use set_forbidden_tile.
+- If the user mentions a bonus for cross-agent parcel delivery (one agent picks up, another delivers), call setup_handoff_pipeline.
+- EDGE MOVEMENT RULES (read carefully):
+  * If the user requests movement to a SPECIFIC directional edge (leftmost, rightmost, topmost, bottommost, left edge, right edge, top edge, bottom edge), use move_to_matching_tile with the appropriate coordinate from the map bounds in the state note. Examples using the actual map bounds {minX}, {maxX}, {minY}, {maxY}:
+    - "leftmost"  / "left edge"   → move_to_matching_tile('x == {minX}, 500')
+    - "rightmost" / "right edge"  → move_to_matching_tile('x == {maxX}, 500')
+    - "topmost"   / "top edge"    → move_to_matching_tile('y == {minY}, 500')
+    - "bottommost"/ "bottom edge" → move_to_matching_tile('y == {maxY}, 500')
+  * If the user says only "go to the border/edge" with NO specific direction, use move_to_edge.
+  * NEVER use move_to_edge for a directional request — it goes to the NEAREST border regardless of which one.
+- move_to_matching_tile and move_to_edge already block until both agents arrive. NEVER add any wait or hold step after them in the same plan.
+- If the current agent state is frozen and the user requests any movement or action that requires the agents to move, ALWAYS begin the plan with unfreeze_agents() as step 1.
+- If the user sends only a generic movement word with no destination ("move", "go", "start", "resume", "continue") and does not specify any target, condition, or location, call ONLY unfreeze_agents() and nothing else. Do NOT invent a destination.
 - Do NOT try to move the agent or check its position.
 - If the user asks for a tool that is not available, do not call any tool and return a step that says "The requested tool is not available."
 
@@ -448,10 +583,12 @@ Available tools:
 - set_parcel_filter(maxReward) -> format: "maxReward"
 - set_location_rule(params) -> format: "target, pts, mustDrop" where target is a coordinate pair 'x, y' or edge terms ('leftmost', 'rightmost', 'top', 'bottom'), pts is an integer value, and mustDrop is a boolean (true to drop, false to visit).
 - set_neighborhood_mission(params) -> format: "cx, cy, radius, pts" — sends both agents to the area around (cx,cy) within Manhattan radius. Both wait for each other then resume.
-- move_to_matching_tile(params) -> format: "condition, pts" — sends both agents to their nearest tile satisfying a JS boolean on x/y (e.g., "y % 2 == 1, 700"). pts negative = command ignored. Always follow with wait_both_at_condition.
-- wait_both_at_condition(condition) -> format: same condition string as move_to_matching_tile — blocks until both agents are on a matching tile, then returns. Times out after 60s.
+- move_to_matching_tile(params) -> format: "condition, pts" — sends both agents to nearest matching tile and blocks until both arrive (e.g., "y % 2 == 1, 700"). pts negative = command ignored.
+- move_to_edge(pts) -> format: "pts" — sends both agents to nearest map border tile and blocks until both arrive (e.g., "300").
+- wait_both_at_condition(condition) -> format: condition string — blocks until both agents already in motion have reached a matching tile. Times out after 60s.
 - freeze_agents() -> no input — immediately stops both agents. They will not move until unfrozen.
 - unfreeze_agents() -> no input — resumes both agents after a freeze.
+- setup_handoff_pipeline(params) -> format: "bonus_pts, threshold" — sets up automatic handoff monitoring. Triggers exchange when combined carried parcels ≥ threshold. (e.g., "200, 3")
 - genericResponse() -> no input, returns a generic fallback response to the user without making any configuration changes. Concise and straight to the point.
 
 You receive:
@@ -520,9 +657,12 @@ const messages = [
 // ==========================================
 
 async function createPlan(userInput) {
-  // Fix 3: append live agent state to the system prompt
   const frozenState = selfAgentRef?.frozen ? 'frozen (both agents are currently stopped)' : 'moving (both agents are currently active)';
-  const stateNote = `\n\nCurrent agent state: ${frozenState}`;
+  const { x: maxX, y: maxY, minX, minY } = mapWidthxHeight;
+  const boundsNote = maxX > 0
+      ? ` Map bounds: X(${minX}..${maxX}), Y(${minY}..${maxY}). Edges: leftmost x==${minX}, rightmost x==${maxX}, topmost y==${minY}, bottommost y==${maxY}.`
+      : ' Map not yet loaded.';
+  const stateNote = `\n\nCurrent agent state: ${frozenState}.${boundsNote}`;
 
   // Fix 1: inject conversation history so the planner has context from prior turns
   const plannerMessages = [
@@ -793,8 +933,12 @@ console.log("Only accepting commands from player id: 'admin'.\n");
 
 // Reset all shared files so both agents start from a clean state
 writeSharedConfig();
-writeFileSync( SLAVE_STATUS_PATH,  JSON.stringify( { arrived: false, conditionMet: false }, null, 2 ) );
+writeFileSync( SLAVE_STATUS_PATH,  JSON.stringify( { arrived: false, conditionMet: false, handoffPhase: null }, null, 2 ) );
 writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( {} ) );
+
+// Serialize all runAgentTurn calls — if a second message arrives while a plan is
+// executing, it is queued and processed after the current plan finishes or times out.
+let commandQueue = Promise.resolve();
 
 socket.onMsg(async (id, name, msg) => {
   // Security check: Ignore all messages unless the ID is exactly 'admin'
@@ -803,8 +947,6 @@ socket.onMsg(async (id, name, msg) => {
   //   console.log(`[Blocked] Ignored message from ${name} (${id}): ${msg}`);
   //   return;
   // }
-
-  currentSenderId = id;
 
   console.log(`=== COMMAND FROM ${name} (${id}) ===`);
   console.log(`Message: ${msg}\n`);
@@ -827,7 +969,45 @@ socket.onMsg(async (id, name, msg) => {
     return;
   }
 
-  await runAgentTurn(msg);
+  // Snapshot sender ID and message now; they must be captured per-command because the
+  // queue runs commands asynchronously after the handler returns.
+  const senderId = id;
+  const msgSnapshot = msg;
 
-  console.log(`Visible memory contains ${messages.length} messages.\n`);
+  commandQueue = commandQueue.then( async () => {
+    currentSenderId = senderId;
+    await runAgentTurn( msgSnapshot );
+    console.log(`Visible memory contains ${messages.length} messages.\n`);
+  } ).catch( () => {} );
 });
+
+// ─── Handoff pipeline monitor ─────────────────────────────────────────────────
+const HANDOFF_COOLDOWN_MS = 10000;
+
+socket.onSensing( () => {
+    if ( !handoffConfig || handoffState.inProgress || !selfAgentRef ) return;
+    if ( Date.now() - handoffState.lastCompletedAt < HANDOFF_COOLDOWN_MS ) return;
+    // Do not trigger handoff while a coordination hold is active — it would interrupt the
+    // hold plan, causing the coordination tool's poll loop to time out.
+    const q = selfAgentRef.intention_queue;
+    if ( q.length > 0 && [ 'go_to_edge', 'go_to_matching_tile', 'go_to_neighborhood' ].includes( q[0].predicate[0] ) ) return;
+    const myCount = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id ).length;
+    try {
+        if ( !existsSync( SLAVE_STATUS_PATH ) ) return;
+        const status = JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) );
+        const slaveCount = status.carriedCount ?? 0;
+        if ( myCount + slaveCount < handoffConfig.threshold ) return;
+        if ( status.x == null || status.y == null ) return;
+        const corridor = findHandoffCorridor( me, { x: status.x, y: status.y } );
+        if ( !corridor ) { console.log( '[handoff] No 3-tile corridor found.' ); return; }
+        handoffState.inProgress = true;
+        console.log( `[handoff] Triggering. Corridor: T_llm(${corridor.T_llm.x},${corridor.T_llm.y}) T_slave(${corridor.T_slave.x},${corridor.T_slave.y}) dir=${corridor.dir}` );
+        selfAgentRef.pushUrgent( [
+            'handoff_llm',
+            corridor.T_llm.x, corridor.T_llm.y,
+            corridor.T_retreat.x, corridor.T_retreat.y,
+            corridor.T_slave.x, corridor.T_slave.y,
+            corridor.dir,
+        ] );
+    } catch ( e ) { console.error( '[handoff] Monitor error:', e.message ); }
+} );

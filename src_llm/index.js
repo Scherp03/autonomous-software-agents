@@ -2,7 +2,7 @@ import { socket } from './socket.js';
 import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, dynamicRules, mapWidthxHeight, CAPACITY, temporaryBlocks, failureCounters } from './beliefs.js';
 import { distance } from './utils.js';
 import { IntentionRevisionRevise } from './agent.js';
-import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary, GoToBonus, DropOnTile, GoToMatchingTile, GoToNeighborhood } from './plans.js';
+import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary, GoToBonus, DropOnTile, GoToMatchingTile, GoToNeighborhood, HandoffLLM, GoToEdge } from './plans.js';
 
 import { setSelfAgent } from './llm.js';
 
@@ -49,9 +49,9 @@ socket.onYou( ( {id, name, x, y, score} ) => {
         console.log(`[Bonus] Walked through bonus tile ${key}! Bonus cleared.`);
     }
 
-    if (cx == 0) borders.push('left');
+    if (cx == mapWidthxHeight.minX) borders.push('left');
     if (cx == mapWidthxHeight.x) borders.push('right');
-    if (cy == 0) borders.push('bottom');
+    if (cy == mapWidthxHeight.minY) borders.push('bottom');
     if (cy == mapWidthxHeight.y) borders.push('top');
 
     for (const b of borders) {
@@ -190,10 +190,10 @@ export function optionsGeneration () {
             // Find all walkable tiles on this specific edge
             const walkableEdgeTiles = Array.from(mapBeliefs.values()).filter(t => {
                 if (t.type == '0') return false; // Skip unwalkable walls
-                if (edge == 'left' && t.x == 0) return true;
-                if (edge == 'right' && t.x == (mapWidthxHeight.x - 1)) return true;
-                if (edge == 'bottom' && t.y == 0) return true;
-                if (edge == 'top' && t.y == (mapWidthxHeight.y - 1)) return true;
+                if (edge == 'left' && t.x == mapWidthxHeight.minX) return true;
+                if (edge == 'right' && t.x == mapWidthxHeight.x) return true;
+                if (edge == 'bottom' && t.y == mapWidthxHeight.minY) return true;
+                if (edge == 'top' && t.y == mapWidthxHeight.y) return true;
                 return false;
             });
 
@@ -294,6 +294,8 @@ setSelfAgent( myAgent );
 
 myAgent.loop();
 
+planLibrary.push( HandoffLLM );
+planLibrary.push( GoToEdge );
 planLibrary.push( GoToMatchingTile );
 planLibrary.push( GoToNeighborhood );
 planLibrary.push( GoToBonus );

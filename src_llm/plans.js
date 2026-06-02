@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { socket } from './socket.js';
-import { me, mapBeliefs, spawnTiles, spawnWeights, agents, parcels, gameConfig, temporaryBlocks, failureCounters, CAPACITY, dynamicRules } from './beliefs.js';
+import { me, mapBeliefs, spawnTiles, spawnWeights, agents, parcels, gameConfig, temporaryBlocks, failureCounters, CAPACITY, dynamicRules, deliveryTiles, handoffState, mapWidthxHeight } from './beliefs.js';
 import { distance, weightedRandom } from './utils.js';
 import { astar, astarDistance } from './pathfinding.js';
 import { IntentionDeliberation } from './agent.js';
@@ -321,11 +321,174 @@ export class GoToMatchingTile extends PlanBase {
             if ( this.stopped ) throw [ 'stopped' ];
             try {
                 await this.subIntention( [ 'go_to', target.x, target.y ] );
+                // Wait for slave to also arrive (prevents moving away before sync)
+                const slaveDeadline = Date.now() + 60000;
+                while ( Date.now() < slaveDeadline ) {
+                    if ( this.stopped ) throw [ 'stopped' ];
+                    try {
+                        if ( existsSync( SLAVE_STATUS_PATH ) ) {
+                            const s = JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) );
+                            if ( s.conditionMet === true && s.condition === condition ) break;
+                        }
+                    } catch ( _ ) {}
+                    await new Promise( r => setTimeout( r, 200 ) );
+                }
+                // Hold position until freeze() stops this plan
+                console.log( `[go_to_matching_tile] Holding position at (${me.x},${me.y})...` );
+                while ( !this.stopped ) {
+                    await new Promise( r => setTimeout( r, 200 ) );
+                }
                 return true;
             } catch ( _ ) {}
         }
 
         throw [ 'go_to_matching_tile: could not reach any matching tile' ];
+    }
+}
+
+export class GoToEdge extends PlanBase {
+    static isApplicableTo ( action ) { return action === 'go_to_edge'; }
+
+    async execute ( action, pts ) {
+        if ( this.stopped ) throw [ 'stopped' ];
+
+        const { x: maxX, y: maxY, minX, minY } = mapWidthxHeight;
+
+        const borderTiles = Array.from( mapBeliefs.values() ).filter( t =>
+            t.type !== '0' &&
+            ( t.x === minX || t.x === maxX || t.y === minY || t.y === maxY )
+        );
+
+        if ( borderTiles.length === 0 )
+            throw [ 'go_to_edge: no border tiles found (map not loaded yet?)' ];
+
+        const sorted = borderTiles.sort( ( a, b ) =>
+            astarDistance( me, a ) - astarDistance( me, b ) );
+
+        for ( const target of sorted ) {
+            if ( this.stopped ) throw [ 'stopped' ];
+            try {
+                await this.subIntention( [ 'go_to', target.x, target.y ] );
+                // Wait for slave to also arrive at the border
+                const slaveDeadline = Date.now() + 60000;
+                while ( Date.now() < slaveDeadline ) {
+                    if ( this.stopped ) throw [ 'stopped' ];
+                    try {
+                        if ( existsSync( SLAVE_STATUS_PATH ) ) {
+                            const s = JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) );
+                            if ( s.edgeArrived === true ) break;
+                        }
+                    } catch ( _ ) {}
+                    await new Promise( r => setTimeout( r, 200 ) );
+                }
+                // Hold position until freeze() stops this plan
+                console.log( `[go_to_edge] Holding at border (${target.x},${target.y})...` );
+                while ( !this.stopped ) {
+                    await new Promise( r => setTimeout( r, 200 ) );
+                }
+                return true;
+            } catch ( _ ) {
+                // AStarMove applied temporaryBlocks for the stuck tile; try the next one
+            }
+        }
+
+        throw [ 'go_to_edge: could not reach any border tile' ];
+    }
+}
+
+// ─── Handoff helpers ─────────────────────────────────────────────────────────
+
+function oppositeDir ( d ) { return { right: 'left', left: 'right', up: 'down', down: 'up' }[ d ]; }
+
+async function pollSlaveHandoffPhase ( phase, timeout = 30000 ) {
+    const deadline = Date.now() + timeout;
+    while ( Date.now() < deadline ) {
+        try {
+            if ( existsSync( SLAVE_STATUS_PATH ) ) {
+                const s = JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) );
+                if ( s.handoffPhase === phase ) return;
+            }
+        } catch ( _ ) {}
+        await new Promise( r => setTimeout( r, 200 ) );
+    }
+    throw [ `handoff: timeout waiting for slave phase '${phase}'` ];
+}
+
+async function waitForClearHandoffZone ( T_llm, excludeKey = null, timeout = 60000 ) {
+    const deadline = Date.now() + timeout;
+    const watched = new Set( [
+        `${T_llm.x}_${T_llm.y}`,
+        `${T_llm.x + 1}_${T_llm.y}`, `${T_llm.x - 1}_${T_llm.y}`,
+        `${T_llm.x}_${T_llm.y + 1}`, `${T_llm.x}_${T_llm.y - 1}`,
+    ] );
+    while ( Date.now() < deadline ) {
+        const clear = Array.from( agents.values() ).every( a => {
+            const key = `${Math.round( a.x )}_${Math.round( a.y )}`;
+            if ( key === excludeKey ) return true; // ignore known partner position
+            return !watched.has( key );
+        } );
+        if ( clear ) return;
+        await new Promise( r => setTimeout( r, 1000 ) );
+    }
+    throw [ 'handoff: timeout waiting for clear zone around T_llm' ];
+}
+
+export class HandoffLLM extends PlanBase {
+    static isApplicableTo ( action ) { return action === 'handoff_llm'; }
+
+    async execute ( action, T_llm_x, T_llm_y, T_retreat_x, T_retreat_y, T_slave_x, T_slave_y, dir_str ) {
+        if ( this.stopped ) throw [ 'stopped' ];
+        const T_llm    = { x: T_llm_x, y: T_llm_y };
+        const ANTI_DIR = oppositeDir( dir_str );
+
+        try {
+            // Tell slave where to go and send corridor geometry
+            writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify(
+                { cmd: 'HANDOFF_GOTO', T_slave_x, T_slave_y, T_llm_x, T_llm_y, dir: dir_str } ) );
+
+            // LLM navigates to T_llm
+            await this.subIntention( [ 'go_to', T_llm_x, T_llm_y ] );
+            if ( this.stopped ) throw [ 'stopped' ];
+
+            // Wait for slave to reach T_slave
+            await pollSlaveHandoffPhase( 'atPosition' );
+            if ( this.stopped ) throw [ 'stopped' ];
+
+            // Step 1: enemy check → LLM drops at T_llm (exclude slave's tile — it's supposed to be there)
+            await waitForClearHandoffZone( T_llm, `${T_slave_x}_${T_slave_y}` );
+            if ( this.stopped ) throw [ 'stopped' ];
+            await socket.emitPutdown();
+
+            // Step 2: LLM vacates T_llm immediately (no check)
+            await socket.emitMove( ANTI_DIR );
+
+            // Signal slave to start its side of the dance
+            writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'HANDOFF_MOVE_IN' } ) );
+
+            // Wait for slave to complete and vacate T_llm (90s: slave's enemy check can take up to 60s)
+            await pollSlaveHandoffPhase( 'vacated', 90000 );
+            if ( this.stopped ) throw [ 'stopped' ];
+
+            // Step 7: LLM moves back to T_llm (no check — parcels are alone)
+            await socket.emitMove( dir_str );
+
+            // Step 8: LLM picks up everything
+            await socket.emitPickup();
+
+            // Step 9: deliver to nearest delivery tile
+            const nearestDelivery = deliveryTiles.reduce(
+                ( best, t ) => { const d = distance( me, t ); return d < best.d ? { t, d } : best; },
+                { t: null, d: Infinity }
+            ).t;
+            if ( nearestDelivery )
+                await this.subIntention( [ 'go_deliver', nearestDelivery.x, nearestDelivery.y ] );
+
+            console.log( '[handoff] Complete. LLM delivered all parcels.' );
+            return true;
+        } finally {
+            handoffState.lastCompletedAt = Date.now();
+            handoffState.inProgress = false;
+        }
     }
 }
 
@@ -369,12 +532,25 @@ export class GoToNeighborhood extends PlanBase {
                     if ( status.arrived ) break;
                 }
             } catch ( _ ) {}
-            // await new Promise( r => setTimeout( r, 200 ) );
+            await new Promise( r => setTimeout( r, 200 ) );
         }
 
         // Signal slave to resume
         writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'RESUME' } ) );
+
+        // Signal the tool's poll loop that both agents have arrived and RESUME is sent
+        try {
+            const prev = existsSync( SLAVE_STATUS_PATH ) ? JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) ) : {};
+            writeFileSync( SLAVE_STATUS_PATH, JSON.stringify( { ...prev, neighborhoodDone: true }, null, 2 ) );
+        } catch ( _ ) {}
+
         console.log( '[llm] Both in neighborhood — RESUME sent to slave.' );
+
+        // Hold position — keeps BDI loop blocked here until freeze() stops this plan
+        console.log( `[llm] Holding position at (${me.x},${me.y})...` );
+        while ( !this.stopped ) {
+            await new Promise( r => setTimeout( r, 200 ) );
+        }
         return true;
     }
 }

@@ -14,7 +14,26 @@ export function setAgent ( agent ) { agentRef = agent; }
 // GoToNeighborhood awaits this to unblock after arriving.
 let resumeResolver = null;
 export function waitForResume () {
-    return new Promise( resolve => { resumeResolver = resolve; } );
+    return new Promise( ( resolve, reject ) => {
+        resumeResolver = resolve;
+        setTimeout( () => {
+            if ( resumeResolver ) {
+                resumeResolver = null;
+                reject( [ 'waitForResume: timed out after 120s — RESUME never received' ] );
+            }
+        }, 120000 );
+    } );
+}
+
+// Resolved when HANDOFF_MOVE_IN is received — unblocks HandoffSlave after LLM has vacated T_llm.
+let handoffMoveInResolver = null;
+export function waitForHandoffMoveIn () {
+    return new Promise( ( resolve, reject ) => {
+        handoffMoveInResolver = resolve;
+        setTimeout( () => {
+            if ( handoffMoveInResolver ) { handoffMoveInResolver = null; reject( [ 'handoff: timeout waiting for HANDOFF_MOVE_IN' ] ); }
+        }, 60000 );
+    } );
 }
 
 function processCommand () {
@@ -38,7 +57,20 @@ function processCommand () {
             agentRef.freeze();
         } else if ( cmd.cmd === 'UNFREEZE' && agentRef ) {
             console.log( '[slave-command] UNFREEZE received.' );
+            const q = agentRef.intention_queue;
+            if ( q.length > 0 && [ 'go_to_edge', 'go_to_matching_tile', 'go_to_neighborhood' ].includes( q[0].predicate[0] ) ) {
+                q[0].stop();
+            }
             agentRef.unfreeze();
+        } else if ( cmd.cmd === 'MOVE_TO_EDGE' && agentRef ) {
+            console.log( `[slave-command] MOVE_TO_EDGE — pts=${cmd.pts ?? 500}` );
+            agentRef.pushUrgent( [ 'go_to_edge', cmd.pts ?? 500 ] );
+        } else if ( cmd.cmd === 'HANDOFF_GOTO' && agentRef ) {
+            console.log( `[slave-command] HANDOFF_GOTO — T_slave(${cmd.T_slave_x},${cmd.T_slave_y}) T_llm(${cmd.T_llm_x},${cmd.T_llm_y}) dir=${cmd.dir}` );
+            agentRef.pushUrgent( [ 'handoff_slave', cmd.T_slave_x, cmd.T_slave_y, cmd.T_llm_x, cmd.T_llm_y, cmd.dir ] );
+        } else if ( cmd.cmd === 'HANDOFF_MOVE_IN' ) {
+            console.log( '[slave-command] HANDOFF_MOVE_IN received.' );
+            if ( handoffMoveInResolver ) { handoffMoveInResolver(); handoffMoveInResolver = null; }
         } else if ( cmd.cmd === 'SAY' ) {
             console.log( `[slave-command] SAY to ${cmd.toId}: ${cmd.message}` );
             socket.emitAsk( cmd.toId, cmd.message );

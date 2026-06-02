@@ -28,4 +28,4 @@ them wait for each other. You will receive 500pts.
 • If a parcel is initially picked up by one agent and later delivered by the other agent, you will receive a
 200 points bonus.
 • All agents must move to an odd-numbered row and wait for our message before moving again, as in
-a “red light, green light” game. 700 points bonus.
+a “red light, green light” game. 700 points bonus. Summary of instabilities found and fixed

@@ -1,9 +1,9 @@
-import { writeFileSync } from 'fs';
+import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { socket } from './socket.js';
 import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, mapWidthxHeight, CAPACITY, dynamicRules, temporaryBlocks, failureCounters } from './beliefs.js';
 import { distance } from './utils.js';
 import { IntentionRevisionRevise } from './agent.js';
-import { GoPickUp, GoDeliver, AStarMove, Explore, GoToBonus, DropOnTile, GoToMatchingTile, GoToNeighborhood, planLibrary } from './plans.js';
+import { GoPickUp, GoDeliver, AStarMove, Explore, GoToBonus, DropOnTile, GoToMatchingTile, GoToNeighborhood, HandoffSlave, GoToEdge, planLibrary } from './plans.js';
 import './config-sync.js';
 import { setAgent, SLAVE_STATUS_PATH } from './slave-command.js';
 
@@ -48,9 +48,9 @@ socket.onYou( ( {id, name, x, y, score} ) => {
     const cx = Math.round( me.x );
     const cy = Math.round( me.y );
     const borders = [];
-    if ( cx === 0 )                    borders.push( 'left' );
+    if ( cx === mapWidthxHeight.minX )  borders.push( 'left' );
     if ( cx === mapWidthxHeight.x )    borders.push( 'right' );
-    if ( cy === 0 )                    borders.push( 'bottom' );
+    if ( cy === mapWidthxHeight.minY )  borders.push( 'bottom' );
     if ( cy === mapWidthxHeight.y )    borders.push( 'top' );
     for ( const b of borders ) {
         if ( dynamicRules.edgeRules.has( b ) && !dynamicRules.edgeRules.get( b ).mustDrop )
@@ -144,6 +144,12 @@ socket.onSensing( ( sensing ) => {
     for ( const [id] of agents ) {
         if ( !sensing.agents.find( a => a.id == id ) ) agents.delete( id );
     }
+
+    try {
+        const carried = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id );
+        const prev = existsSync( SLAVE_STATUS_PATH ) ? JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) ) : {};
+        writeFileSync( SLAVE_STATUS_PATH, JSON.stringify( { ...prev, carriedCount: carried.length, x: me.x, y: me.y }, null, 2 ) );
+    } catch ( _ ) {}
 } );
 
 // ─── Options Generation ──────────────────────────────────────────────────────
@@ -180,10 +186,10 @@ export function optionsGeneration () {
         if ( rule.pts <= 0 ) continue;
         const walkableEdgeTiles = Array.from( mapBeliefs.values() ).filter( t => {
             if ( t.type == '0' ) return false;
-            if ( edge === 'left'   && t.x === 0 )                    return true;
-            if ( edge === 'right'  && t.x === mapWidthxHeight.x - 1 ) return true;
-            if ( edge === 'bottom' && t.y === 0 )                    return true;
-            if ( edge === 'top'    && t.y === mapWidthxHeight.y - 1 ) return true;
+            if ( edge === 'left'   && t.x === mapWidthxHeight.minX )  return true;
+            if ( edge === 'right'  && t.x === mapWidthxHeight.x )    return true;
+            if ( edge === 'bottom' && t.y === mapWidthxHeight.minY )  return true;
+            if ( edge === 'top'    && t.y === mapWidthxHeight.y )    return true;
             return false;
         } );
             if (walkableEdgeTiles.length > 0) {
@@ -273,6 +279,8 @@ writeFileSync( SLAVE_STATUS_PATH, JSON.stringify( { arrived: false }, null, 2 ) 
 
 myAgent.loop();
 
+planLibrary.push( HandoffSlave );
+planLibrary.push( GoToEdge );
 planLibrary.push( GoToMatchingTile );
 planLibrary.push( GoToNeighborhood );
 planLibrary.push( GoToBonus );

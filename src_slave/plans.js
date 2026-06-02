@@ -1,10 +1,10 @@
-import { writeFileSync } from 'fs';
+import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { socket } from './socket.js';
-import { me, mapBeliefs, spawnTiles, spawnWeights, agents, parcels, gameConfig, temporaryBlocks, dynamicRules, CAPACITY, failureCounters } from './beliefs.js';
+import { me, mapBeliefs, spawnTiles, spawnWeights, agents, parcels, gameConfig, temporaryBlocks, dynamicRules, CAPACITY, failureCounters, mapWidthxHeight } from './beliefs.js';
 import { distance, weightedRandom } from './utils.js';
 import { astar, astarDistance } from './pathfinding.js';
 import { IntentionDeliberation } from './agent.js';
-import { SLAVE_STATUS_PATH, waitForResume } from './slave-command.js';
+import { SLAVE_STATUS_PATH, waitForResume, waitForHandoffMoveIn } from './slave-command.js';
 
 /**
  * @typedef { {
@@ -310,8 +310,12 @@ export class GoToMatchingTile extends PlanBase {
             if ( this.stopped ) throw [ 'stopped' ];
             try {
                 await this.subIntention( [ 'go_to', target.x, target.y ] );
-                writeFileSync( SLAVE_STATUS_PATH, JSON.stringify( { conditionMet: true, condition, x: me.x, y: me.y }, null, 2 ) );
+                writeSlaveStatus( { conditionMet: true, condition, x: me.x, y: me.y } );
                 console.log( `[slave] GoToMatchingTile arrived at (${me.x},${me.y}), condition "${condition}" met.` );
+                // Hold position until freeze() stops this plan
+                while ( !this.stopped ) {
+                    await new Promise( r => setTimeout( r, 200 ) );
+                }
                 return true;
             } catch ( _ ) {}
         }
@@ -348,11 +352,130 @@ export class GoToNeighborhood extends PlanBase {
 
         if ( !arrived ) throw [ 'go_to_neighborhood: could not reach any tile' ];
 
-        writeFileSync( SLAVE_STATUS_PATH, JSON.stringify( { arrived: true, x: me.x, y: me.y }, null, 2 ) );
+        writeSlaveStatus( { arrived: true, x: me.x, y: me.y } );
         console.log( `[slave] Arrived at neighborhood (${me.x},${me.y}), waiting for RESUME...` );
 
         await waitForResume();
-        console.log( '[slave] RESUME received, resuming normal operation.' );
+        console.log( '[slave] RESUME received, holding position...' );
+
+        // Hold position until freeze() stops this plan
+        while ( !this.stopped ) {
+            await new Promise( r => setTimeout( r, 200 ) );
+        }
+        return true;
+    }
+}
+
+export class GoToEdge extends PlanBase {
+    static isApplicableTo ( action ) { return action === 'go_to_edge'; }
+
+    async execute ( action, pts ) {
+        if ( this.stopped ) throw [ 'stopped' ];
+
+        const { x: maxX, y: maxY, minX, minY } = mapWidthxHeight;
+
+        const borderTiles = Array.from( mapBeliefs.values() ).filter( t =>
+            t.type !== '0' &&
+            ( t.x === minX || t.x === maxX || t.y === minY || t.y === maxY )
+        );
+
+        if ( borderTiles.length === 0 )
+            throw [ 'go_to_edge: no border tiles found (map not loaded yet?)' ];
+
+        const sorted = borderTiles.sort( ( a, b ) =>
+            astarDistance( me, a ) - astarDistance( me, b ) );
+
+        for ( const target of sorted ) {
+            if ( this.stopped ) throw [ 'stopped' ];
+            try {
+                await this.subIntention( [ 'go_to', target.x, target.y ] );
+                writeSlaveStatus( { edgeArrived: true } );
+                console.log( `[go_to_edge] Holding at border (${target.x},${target.y})...` );
+                // Hold position until freeze() stops this plan
+                while ( !this.stopped ) {
+                    await new Promise( r => setTimeout( r, 200 ) );
+                }
+                return true;
+            } catch ( _ ) {
+                // AStarMove applied temporaryBlocks for the stuck tile; try the next one
+            }
+        }
+
+        throw [ 'go_to_edge: could not reach any border tile' ];
+    }
+}
+
+// ─── Handoff helpers ─────────────────────────────────────────────────────────
+
+function oppositeDir ( d ) { return { right: 'left', left: 'right', up: 'down', down: 'up' }[ d ]; }
+
+function writeSlaveStatus ( updates ) {
+    try {
+        const prev = existsSync( SLAVE_STATUS_PATH ) ? JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) ) : {};
+        writeFileSync( SLAVE_STATUS_PATH, JSON.stringify( { ...prev, ...updates }, null, 2 ) );
+    } catch ( _ ) {}
+}
+
+async function waitForClearHandoffZone ( T_llm, excludeKey = null, timeout = 60000 ) {
+    const deadline = Date.now() + timeout;
+    const watched = new Set( [
+        `${T_llm.x}_${T_llm.y}`,
+        `${T_llm.x + 1}_${T_llm.y}`, `${T_llm.x - 1}_${T_llm.y}`,
+        `${T_llm.x}_${T_llm.y + 1}`, `${T_llm.x}_${T_llm.y - 1}`,
+    ] );
+    while ( Date.now() < deadline ) {
+        const clear = Array.from( agents.values() ).every( a => {
+            const key = `${Math.round( a.x )}_${Math.round( a.y )}`;
+            if ( key === excludeKey ) return true; // ignore known partner position
+            return !watched.has( key );
+        } );
+        if ( clear ) return;
+        await new Promise( r => setTimeout( r, 1000 ) );
+    }
+    throw [ 'handoff: timeout waiting for clear zone around T_llm' ];
+}
+
+export class HandoffSlave extends PlanBase {
+    static isApplicableTo ( action ) { return action === 'handoff_slave'; }
+
+    async execute ( action, T_slave_x, T_slave_y, T_llm_x, T_llm_y, dir_str ) {
+        if ( this.stopped ) throw [ 'stopped' ];
+        const T_llm    = { x: T_llm_x, y: T_llm_y };
+        const ANTI_DIR = oppositeDir( dir_str );
+        // T_retreat is where the LLM moves after dropping (one step in ANTI_DIR from T_llm)
+        const DIR_DELTA = { right:{dx:1,dy:0}, left:{dx:-1,dy:0}, up:{dx:0,dy:1}, down:{dx:0,dy:-1} }[ dir_str ];
+        const T_retreat_key = `${T_llm_x - DIR_DELTA.dx}_${T_llm_y - DIR_DELTA.dy}`;
+
+        // Navigate to T_slave
+        await this.subIntention( [ 'go_to', T_slave_x, T_slave_y ] );
+        if ( this.stopped ) throw [ 'stopped' ];
+
+        // Signal LLM: slave is in position
+        writeSlaveStatus( { handoffPhase: 'atPosition' } );
+        console.log( `[slave] Handoff: at T_slave (${T_slave_x},${T_slave_y}), waiting for HANDOFF_MOVE_IN...` );
+
+        // Wait for LLM to drop and vacate T_llm
+        await waitForHandoffMoveIn();
+        if ( this.stopped ) throw [ 'stopped' ];
+
+        // Step 3: move into T_llm (now vacated by LLM)
+        await socket.emitMove( ANTI_DIR );
+
+        // Step 4: pick up LLM's parcels immediately
+        await socket.emitPickup();
+
+        // Step 5: enemy check → drop everything (slave's own + LLM's)
+        // Exclude T_retreat — the LLM just moved there and is supposed to be there
+        await waitForClearHandoffZone( T_llm, T_retreat_key );
+        if ( this.stopped ) throw [ 'stopped' ];
+        await socket.emitPutdown();
+
+        // Step 6: vacate T_llm so LLM can step in
+        await socket.emitMove( dir_str );
+
+        // Signal LLM: T_llm is free; reset carriedCount so the monitor doesn't re-trigger immediately
+        writeSlaveStatus( { handoffPhase: 'vacated', carriedCount: 0 } );
+        console.log( '[slave] Handoff: vacated T_llm. Dance complete.' );
         return true;
     }
 }
