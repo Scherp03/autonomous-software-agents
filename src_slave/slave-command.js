@@ -41,8 +41,8 @@ function processCommand () {
     try {
         const cmd = JSON.parse( readFileSync( SLAVE_COMMAND_PATH, 'utf8' ) );
         if ( cmd.cmd === 'GO_TO_MATCHING_TILE' && agentRef ) {
-            console.log( `[slave-command] GO_TO_MATCHING_TILE — condition: "${cmd.condition}", pts: ${cmd.pts ?? 500}` );
-            agentRef.pushUrgent( [ 'go_to_matching_tile', cmd.condition, cmd.pts ?? 500 ] );
+            console.log( `[slave-command] GO_TO_MATCHING_TILE — condition: "${cmd.condition}", pts: ${cmd.pts ?? 500}, hold: ${cmd.hold ?? true}` );
+            agentRef.pushUrgent( [ 'go_to_matching_tile', cmd.condition, cmd.pts ?? 500, cmd.hold ?? true ] );
         } else if ( cmd.cmd === 'GO_TO_NEIGHBORHOOD' && agentRef ) {
             console.log( `[slave-command] GO_TO_NEIGHBORHOOD — ${cmd.tiles.length} tiles, ${cmd.pts} pts` );
             agentRef.pushUrgent( [ 'go_to_neighborhood', cmd.tiles, cmd.pts ] );

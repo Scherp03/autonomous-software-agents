@@ -206,24 +206,31 @@ async function set_neighborhood_mission(input) {
 }
 
 async function move_to_matching_tile(input) {
-    // Input: "condition" or "condition, pts" — pts is optional, defaults to 500
-    // Split on last comma to avoid breaking conditions like "x == 0 || y == 0"
-    const lastComma = input.lastIndexOf(',');
-    let condition, pts;
-    if (lastComma !== -1) {
-        const afterComma = input.slice(lastComma + 1).trim();
+    // Input: "condition" or "condition, pts" or "condition, pts, hold"
+    // Parse hold (true/false) from the last token first, then pts, then condition.
+    let remaining = input.trim();
+    let hold = true;
+    let pts = 500;
+
+    const lastComma1 = remaining.lastIndexOf(',');
+    if (lastComma1 !== -1) {
+        const lastToken = remaining.slice(lastComma1 + 1).trim().toLowerCase();
+        if (lastToken === 'true' || lastToken === 'false') {
+            hold = lastToken === 'true';
+            remaining = remaining.slice(0, lastComma1).trim();
+        }
+    }
+
+    const lastComma2 = remaining.lastIndexOf(',');
+    if (lastComma2 !== -1) {
+        const afterComma = remaining.slice(lastComma2 + 1).trim();
         const parsedPts = Number(afterComma);
         if (!isNaN(parsedPts)) {
-            condition = input.slice(0, lastComma).trim();
             pts = parsedPts;
-        } else {
-            condition = input.trim();
-            pts = 500;
+            remaining = remaining.slice(0, lastComma2).trim();
         }
-    } else {
-        condition = input.trim();
-        pts = 500;
     }
+    const condition = remaining;
 
     // Validate condition before sending anywhere
     let fn;
@@ -234,8 +241,8 @@ async function move_to_matching_tile(input) {
         const prev = existsSync( SLAVE_STATUS_PATH ) ? JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) ) : {};
         writeFileSync( SLAVE_STATUS_PATH, JSON.stringify( { ...prev, conditionMet: false }, null, 2 ) );
     } catch ( _ ) {}
-    writeFileSync(SLAVE_COMMAND_PATH, JSON.stringify({ cmd: 'GO_TO_MATCHING_TILE', condition, pts }));
-    if (selfAgentRef) selfAgentRef.pushUrgent(['go_to_matching_tile', condition, pts]);
+    writeFileSync(SLAVE_COMMAND_PATH, JSON.stringify({ cmd: 'GO_TO_MATCHING_TILE', condition, pts, hold }));
+    if (selfAgentRef) selfAgentRef.pushUrgent(['go_to_matching_tile', condition, pts, hold]);
 
     // Block until both agents have arrived
     const deadline = Date.now() + 30000;
@@ -251,8 +258,10 @@ async function move_to_matching_tile(input) {
                 }
             }
         } catch (_) {}
-        if (selfMet && slaveMet)
-            return `Both agents at "${condition}". Self (${Math.round(me.x)},${Math.round(me.y)}), slave (${slavePos.x},${slavePos.y}).`;
+        if (selfMet && slaveMet) {
+            const holdNote = hold ? 'Agents are holding position.' : 'Agents have resumed normal operation.';
+            return `Both agents at "${condition}". Self (${Math.round(me.x)},${Math.round(me.y)}), slave (${slavePos.x},${slavePos.y}). ${holdNote}`;
+        }
         await new Promise(r => setTimeout(r, 200));
     }
     return `Timeout: agents did not reach "${condition}" within 30s.`;
@@ -531,7 +540,7 @@ Available tools:
 - set_parcel_filter(maxReward): instructs the agent to wait to deliver and/or pick up parcels until their reward decays to maxReward or below. Input format: "maxReward" (e.g., "10")
 - set_location_rule(params): Configures point allocations or route bans based on spatial regions or tiles. The user can request the agent to reach a specific location (specific coordinate or border) and wether to drop a package on it. If the bonus on a specific tile is negative, call 'set_forbidden_tile' to blacklist it. Input format: "target, pts, mustDrop" where target is a coordinate pair 'x, y' or edge terms ('leftmost', 'rightmost', 'top', 'bottom'), pts is an integer value, and mustDrop is a boolean (true if the agent must drop a package, false if it just needs to visit. If not specified, it defaults to false). (e.g., "0, 0, 10, true" or "leftmost, -10, false").
 - set_neighborhood_mission(params): Sends BOTH agents to a neighborhood (area around a map position). Both agents independently navigate to the nearest free tile within the area and wait for each other before resuming. Input format: "cx, cy, radius, pts" where cx/cy is the center coordinate, radius is the Manhattan distance radius, and pts is the bonus points (default 500). (e.g., "5, 5, 3, 500").
-- move_to_matching_tile(params): Sends BOTH agents to the nearest tile satisfying a JS condition, then blocks until both arrive (up to 30s). Call this tool only if the user explicitly requests the agents to stop. If the request is to reach a specific tile, don't use this tool, use: 'set_location_rule'. Input format: "condition, pts" where condition is a JS boolean expression on x and y, and pts is the bonus/penalty value (default 500, negative = command ignored). (e.g., "y % 2 == 1, 700").
+- move_to_matching_tile(params): Sends BOTH agents to the nearest tile satisfying a JS condition, then blocks until both arrive (up to 30s). If the request is to reach a specific tile without stopping, use hold=false. If the user explicitly requests the agents to stop there, use hold=true (default). If the request is only to reach a tile for a bonus, don't use this tool, use: 'set_location_rule'. Input format: "condition, pts, hold" where condition is a JS boolean expression on x and y, pts is the bonus/penalty value (default 500, negative = command ignored), and hold is a boolean (default true). (e.g., "y % 2 == 1, 700, false" to visit without stopping, or "x == 5, 500, true" to hold there).
 - freeze_agents(): Immediately stops BOTH agents. They will not move or pick up parcels until unfrozen. No input required.
 - unfreeze_agents(): Resumes normal operation for BOTH agents after a freeze. No input required.
 - setup_handoff_pipeline(params): Sets up automatic cross-agent parcel handoff. Monitors both agents; when combined carried parcels reach the threshold, triggers a coordinated exchange so the LLM agent delivers all parcels and earns the cross-agent bonus. Input format: "bonus_pts, threshold" (e.g., "200, 3"). Default threshold=3.
@@ -546,7 +555,7 @@ Rules:
 - If the user uses math to define coordinates (e.g., "x=4*2"), include a step that uses calculate first.
 - If the user mentions a penalty for moving to a tile, use set_forbidden_tile.
 - If the user mentions a bonus for cross-agent parcel delivery (one agent picks up, another delivers), call setup_handoff_pipeline.
-- move_to_matching_tile already block until both agents arrive. NEVER add any wait or hold step after them in the same plan.
+- move_to_matching_tile already blocks until both agents arrive. NEVER add any wait or hold step after it in the same plan. When hold=false, agents resume immediately after arrival; when hold=true (default), they stay until unfrozen.
 - If the current agent state is frozen and the user requests any movement or action that requires the agents to move, ALWAYS begin the plan with unfreeze_agents() as step 1.
 - If the user sends only a generic movement word with no destination ("move", "go", "start", "resume", "continue") and does not specify any target, condition, or location, call ONLY unfreeze_agents() and nothing else. Do NOT invent a destination.
 - Do NOT try to move the agent or check its position.
@@ -574,7 +583,7 @@ Available tools:
 - set_parcel_filter(maxReward) -> format: "maxReward"
 - set_location_rule(params) -> format: "target, pts, mustDrop" where target is a coordinate pair 'x, y' or edge terms ('leftmost', 'rightmost', 'top', 'bottom'), pts is an integer value, and mustDrop is a boolean (true to drop, false to visit).
 - set_neighborhood_mission(params) -> format: "cx, cy, radius, pts" — sends both agents to the area around (cx,cy) within Manhattan radius. Both wait for each other then resume.
-- move_to_matching_tile(params) -> format: "condition, pts" — sends both agents to nearest matching tile and blocks until both arrive (e.g., "y % 2 == 1, 700"). pts negative = command ignored.
+- move_to_matching_tile(params) -> format: "condition, pts, hold" — sends both agents to nearest matching tile and blocks until both arrive (e.g., "y % 2 == 1, 700, false"). pts negative = command ignored. hold=true (default) keeps agents at tile; hold=false releases them immediately after arrival.
 - wait_both_at_condition(condition) -> format: condition string — blocks until both agents already in motion have reached a matching tile. Times out after 30s.
 - freeze_agents() -> no input — immediately stops both agents. They will not move until unfrozen.
 - unfreeze_agents() -> no input — resumes both agents after a freeze.

@@ -303,7 +303,7 @@ export class DropOnTile extends PlanBase {
 export class GoToMatchingTile extends PlanBase {
     static isApplicableTo ( action ) { return action === 'go_to_matching_tile'; }
 
-    async execute ( action, condition, pts ) {
+    async execute ( action, condition, pts, hold = true ) {
         if ( this.stopped ) throw [ 'stopped' ];
 
         let fn;
@@ -333,10 +333,11 @@ export class GoToMatchingTile extends PlanBase {
                     } catch ( _ ) {}
                     await new Promise( r => setTimeout( r, 200 ) );
                 }
-                // Hold position until freeze() stops this plan
-                console.log( `[go_to_matching_tile] Holding position at (${me.x},${me.y})...` );
-                while ( !this.stopped ) {
-                    await new Promise( r => setTimeout( r, 200 ) );
+                console.log( `[go_to_matching_tile] Arrived at (${me.x},${me.y}). hold=${hold}` );
+                if ( hold ) {
+                    while ( !this.stopped ) {
+                        await new Promise( r => setTimeout( r, 200 ) );
+                    }
                 }
                 return true;
             } catch ( _ ) {}

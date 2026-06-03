@@ -292,7 +292,7 @@ export class DropOnTile extends PlanBase {
 export class GoToMatchingTile extends PlanBase {
     static isApplicableTo ( action ) { return action === 'go_to_matching_tile'; }
 
-    async execute ( action, condition, pts ) {
+    async execute ( action, condition, pts, hold = true ) {
         if ( this.stopped ) throw [ 'stopped' ];
 
         let fn;
@@ -311,10 +311,11 @@ export class GoToMatchingTile extends PlanBase {
             try {
                 await this.subIntention( [ 'go_to', target.x, target.y ] );
                 writeSlaveStatus( { conditionMet: true, condition, x: me.x, y: me.y } );
-                console.log( `[slave] GoToMatchingTile arrived at (${me.x},${me.y}), condition "${condition}" met.` );
-                // Hold position until freeze() stops this plan
-                while ( !this.stopped ) {
-                    await new Promise( r => setTimeout( r, 200 ) );
+                console.log( `[slave] GoToMatchingTile arrived at (${me.x},${me.y}), condition "${condition}" met. hold=${hold}` );
+                if ( hold ) {
+                    while ( !this.stopped ) {
+                        await new Promise( r => setTimeout( r, 200 ) );
+                    }
                 }
                 return true;
             } catch ( _ ) {}
