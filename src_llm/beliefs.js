@@ -90,10 +90,14 @@ export const dynamicRules = {
 
 export const CAPACITY = 10;
 
+export const THRESHOLD_FOR_HANDOFF = 2; // Number of parcels to trigger handoff
+
 export const handoffState = { inProgress: false, lastCompletedAt: 0 };
 
 // export const ADMIN_ID = '715c7f';
 export const ADMIN_ID = '00a552';
 export const ADMIN_NAME = 'admin';
+export const SLAVE_NAME = 'JOk3R_slave';
+export const SLAVE_ID = 'f7b43d';
 // export const ADMIN_ID = "4c3c93"
 // export const ADMIN_NAME = "J0K3R"

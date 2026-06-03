@@ -208,7 +208,7 @@ export class AStarMove extends PlanBase {
                 let currentFailures = failureCounters.get(targetKey) || 0;
                 failureCounters.set(targetKey, currentFailures + 1);
 
-                console.log(failureCounters.get(targetKey))
+                // console.log(failureCounters.get(targetKey))
 
                 // If stuck for 5 tries, abandon the goal for 15 seconds!
                 if ( failureCounters.get(targetKey) >= 5 ) {
@@ -292,7 +292,7 @@ export class DropOnTile extends PlanBase {
 export class GoToMatchingTile extends PlanBase {
     static isApplicableTo ( action ) { return action === 'go_to_matching_tile'; }
 
-    async execute ( action, condition, pts, hold = true ) {
+    async execute ( action, condition, pts, hold = false ) {
         if ( this.stopped ) throw [ 'stopped' ];
 
         let fn;

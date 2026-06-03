@@ -1,8 +1,6 @@
 {
   "arrived": false,
-  "conditionMet": false,
-  "handoffPhase": null,
   "carriedCount": 0,
-  "x": 5,
-  "y": 25
+  "x": 33.6,
+  "y": 20
 }

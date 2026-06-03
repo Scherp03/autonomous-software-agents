@@ -205,11 +205,11 @@ export class AStarMove extends PlanBase {
                 let currentFailures = failureCounters.get(targetKey) || 0;
                 failureCounters.set(targetKey, currentFailures + 1);
 
-                console.log(failureCounters.get(targetKey))
+                // console.log(failureCounters.get(targetKey))
 
                 // If stuck for 5 tries, abandon the goal for 15 seconds!
                 if ( failureCounters.get(targetKey) >= 5 ) {
-                    console.log(`[Stuck] Bumped 5 times. Abandoning target ${targetX},${targetY} for 15s.`);
+                    // console.log(`[Stuck] Bumped 5 times. Abandoning target ${targetX},${targetY} for 15s.`);
                     // frustrationBlocks.set(targetKey, Date.now() + 15000);
 
                     temporaryBlocks.set(targetKey, Date.now() + 15000);
