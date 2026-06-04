@@ -5,6 +5,10 @@ export const me = { id: '', name: '', x: -1, y: -1, score: 0 };
  */
 export const mapBeliefs = new Map();
 
+export const crates = new Map();
+export const crateTargets = new Map();
+export const crateCooldowns = new Map();
+
 /** @type { {x:number, y:number}[] } */
 export const deliveryTiles = [];
 

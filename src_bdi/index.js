@@ -1,8 +1,8 @@
 import { socket } from './socket.js';
-import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, failureCounters, CAPACITY, temporaryBlocks } from './beliefs.js';
+import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, failureCounters, CAPACITY, temporaryBlocks, crates, crateTargets, crateCooldowns } from './beliefs.js';
 import { distance } from './utils.js';
 import { IntentionRevisionRevise } from './agent.js';
-import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary } from './plans.js';
+import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary, SolveCrate } from './plans.js';
 
 // ─── Belief Revision (Socket Listeners) ──────────────────────────────────────
 socket.onConfig( config => {
@@ -41,6 +41,7 @@ socket.onYou( ( {id, name, x, y, score} ) => {
 
 function updateTileBelief( x, y, type ) {
     const t = type.toString();
+    const key = `${x}_${y}`;
 
     const delIdx = deliveryTiles.findIndex( d => d.x == x && d.y == y );
     if ( t == '2' ) { if ( delIdx === -1 ) deliveryTiles.push( {x, y} ); }
@@ -49,6 +50,13 @@ function updateTileBelief( x, y, type ) {
     const spawnIdx = spawnTiles.findIndex( s => s.x == x && s.y == y );
     if ( t == '1' ) { if ( spawnIdx === -1 ) spawnTiles.push( {x, y} ); }
     else            { if ( spawnIdx !== -1 ) spawnTiles.splice( spawnIdx, 1 ); }
+
+    // crates logic
+    if ( t == '5' ) { crates.set(key, {x, y}); } 
+    else { crates.delete(key); }
+
+    if ( t == '5!' ) { crateTargets.set(key, {x, y}); } 
+    else { crateTargets.delete(key); }
 }
 
 // Gaussian KDE over spawn tiles. Bandwidth = observation_distance.
@@ -149,6 +157,36 @@ export function optionsGeneration () {
         }
     }
 
+    if (crates.size > 0 && crateTargets.size > 0) {
+        const now = Date.now();
+
+        // 1. Filter out any crates that are currently on the 10-second cooldown
+        const validCrates = Array.from(crates.values()).filter(c => {
+            const key = `${c.x}_${c.y}`;
+            return !crateCooldowns.has(key) || crateCooldowns.get(key) < now;
+        });
+
+        if (validCrates.length > 0) {
+            // Find the nearest valid crate to me
+            const nearestCrate = validCrates.reduce((best, c) => {
+                const d = distance(me, c);
+                return d < best.d ? { c, d } : best;
+            }, { c: null, d: Infinity }).c;
+            
+            // Only trigger if we are exactly adjacent (distance <= 1)
+            if (nearestCrate && distance(me, nearestCrate) <= 1) {
+                const nearestTarget = Array.from(crateTargets.values()).reduce((best, t) => {
+                    const d = distance(nearestCrate, t);
+                    return d < best.d ? { t, d } : best;
+                }, { t: null, d: Infinity }).t;
+                
+                if (nearestTarget) {
+                    myAgent.push( [ 'solve_crate', nearestCrate.x, nearestCrate.y, nearestTarget.x, nearestTarget.y ] );
+                }
+            }
+        }
+    }
+
     // Always propose explore as fallback; getUtility ranks it last (utility = 0)
     myAgent.push( [ 'explore' ] );
 }
@@ -160,6 +198,8 @@ socket.onYou( optionsGeneration );
 const myAgent = new IntentionRevisionRevise();
 
 myAgent.loop();
+
+planLibrary.push( SolveCrate );
 
 planLibrary.push( GoPickUp );
 planLibrary.push( GoDeliver );
