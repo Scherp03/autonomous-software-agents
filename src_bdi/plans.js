@@ -1,8 +1,11 @@
 import { socket } from './socket.js';
-import { me, mapBeliefs, spawnTiles, spawnWeights, parcels, gameConfig, temporaryBlocks, failureCounters } from './beliefs.js';
+import { me, mapBeliefs, spawnTiles, spawnWeights, parcels, gameConfig, temporaryBlocks, failureCounters, crateCooldowns, agents } from './beliefs.js';
 import { distance, weightedRandom } from './utils.js';
 import { astar, astarDistance } from './pathfinding.js';
 import { IntentionDeliberation } from './agent.js';
+import { onlineSolver, Beliefset, PddlProblem } from "@unitn-asa/pddl-client";
+import { crateDomain } from '../planner/pddl.js';
+import { crates, setIsCrateBlocking } from './beliefs.js';
 
 /**
  * @typedef { {
@@ -224,6 +227,12 @@ export class AStarMove extends PlanBase {
                 if (move == 'left')  blockX -= 1;
                 if (move == 'up')    blockY += 1;
                 if (move == 'down')  blockY -= 1;
+                console.log(`Blacklisting tile (${blockX},${blockY}) temporarily.`);
+
+                if (crates.has(`${blockX}_${blockY}`)) {
+                    // console.log(`The blocked tile (${blockX},${blockY}) has a crate! Setting IsCrateBlocking to true.`);
+                    setIsCrateBlocking(true);
+                }
 
                 temporaryBlocks.set(`${blockX}_${blockY}`, Date.now() + 2000);
 
@@ -247,6 +256,117 @@ export class AStarMove extends PlanBase {
             await new Promise(res => setTimeout(res, 100));
         }
 
+        return true;
+    }
+}
+
+export class SolveCrate extends PlanBase {
+    static isApplicableTo ( action ) { return action === 'solve_crate'; }
+
+    async execute ( action, crateX, crateY, targetX, targetY ) {
+        if ( this.stopped ) throw [ 'stopped' ];
+        
+        const beliefSet = new Beliefset();
+        
+        // Define bounding box to prevent solver timeout (e.g., +/- X tiles around the crate)
+        const radius = 3;
+        const minX = Math.min(Math.round(me.x), crateX, targetX) - radius;
+        const maxX = Math.max(Math.round(me.x), crateX, targetX) + radius;
+        const minY = Math.min(Math.round(me.y), crateY, targetY) - radius;
+        const maxY = Math.max(Math.round(me.y), crateY, targetY) + radius;
+
+        // 1. Declare Objects (Coordinates)
+        for(let i = minX; i <= maxX; i++) beliefSet.objects.push(`x${i}`);
+        for(let i = minY; i <= maxY; i++) beliefSet.objects.push(`y${i}`);
+
+        // 2. Declare Grid Connectivity
+        for(let i = minX; i < maxX; i++) {
+            beliefSet.declare(`left x${i} x${i+1}`);  // x(i) is left of x(i+1)
+            beliefSet.declare(`right x${i+1} x${i}`); // x(i+1) is right of x(i)
+        }
+        for(let j = minY; j < maxY; j++) {
+            beliefSet.declare(`down y${j} y${j+1}`);  
+            beliefSet.declare(`up y${j+1} y${j}`);
+        }
+
+        // 3. Declare Entities
+        beliefSet.declare(`agent x${Math.round(me.x)} y${Math.round(me.y)}`);
+        // beliefSet.declare(`crate x${crateX} y${crateY}`);
+
+        // 4. Declare Walls (Everything un-walkable)
+        for (let x = minX; x <= maxX; x++) {
+            for(let y = minY; y <= maxY; y++) {
+                const key = `${x}_${y}`;
+                const tile = mapBeliefs.get(key);
+
+                // Skip the target crate (already declared above)
+                // if (x === crateX && y === crateY) continue;
+
+                // If there's ANOTHER crate here, declare it!
+                if (crates.has(key)) {
+                    beliefSet.declare(`crate x${x} y${y}`);
+                    // continue; 
+                }
+
+                // Check if another agent is standing here
+                const hasAgent = Array.from(agents.values()).some(
+                    a => Math.round(a.x) === x && Math.round(a.y) === y
+                );
+
+                // Treat walls, out-of-bounds, or other agents as static walls
+                if (!tile || tile.type === '0' || hasAgent) {
+                    beliefSet.declare(`wall x${x} y${y}`);
+                }
+            }
+        }
+
+        // 5. Construct Problem
+        const pddlProblem = new PddlProblem(
+            'push-crate',
+            beliefSet.objects.join(' '),
+            beliefSet.toPddlString(),
+            `and (crate x${targetX} y${targetY})`
+        );
+
+        // console.log('PDDL Problem:\n', pddlProblem.toPddlString());
+
+        this.log('Asking PDDL Solver to plan Sokoban path...');
+        
+        // 6. Call Solver
+        let plan;
+        try {
+            plan = await onlineSolver(crateDomain, pddlProblem.toPddlString());
+        } catch (err) {
+            this.log('PDDL solver failed/timed out. Blacklisting crate tile.');
+            temporaryBlocks.set(`${crateX}_${crateY}`, Date.now() + 5000);
+            throw ['pddl solver failed or timed out', err];
+        }
+
+        if (!plan || plan.length === 0) {
+            crateCooldowns.set(`${crateX}_${crateY}`, Date.now() + 8000);
+            throw ['no pddl plan found'];
+        }
+        // 7. Execute Plan directly using Socket
+        // Actions look like: { action: 'move-right', args: ['x1', 'x2', 'y1'] }
+        for (const steps of plan) {
+            if (this.stopped) throw ['stopped during execution'];
+            
+            const step = steps.action.toLowerCase();
+            let moveDir = '';
+            if (step.includes('left')) moveDir = 'left';
+            if (step.includes('right')) moveDir = 'right';
+            if (step.includes('up')) moveDir = 'up';
+            if (step.includes('down')) moveDir = 'down';
+
+            if (moveDir) {
+                this.log(`PDDL Step: Executing ${steps.action} -> moving ${moveDir}`);
+                await socket.emitMove(moveDir);
+                await new Promise(res => setTimeout(res, 150)); // Allow server state to update
+            }
+        }
+
+        crateCooldowns.set(`${crateX}_${crateY}`, Date.now() + 8000); // Cooldown to prevent immediate re-planning on the same crate
+        
         return true;
     }
 }

@@ -58,6 +58,11 @@ export class IntentionRevisionRevise extends IntentionRevision {
         const decayIntervalMs = parseMs( gameConfig.GAME.parcels.decaying_event );
         const decayPerStep    = gameConfig.CLOCK / decayIntervalMs;
 
+        if ( action === 'solve_crate' ) {
+            return 10000; // Placeholder utility for crate solving, as it doesn't directly relate to parcels. Adjust as needed.
+        }
+
+
         if ( action === 'go_deliver' ) {
             const carried = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id );
             if ( carried.length === 0 ) return -1;

@@ -1,8 +1,8 @@
 import { socket } from './socket.js';
-import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, failureCounters, CAPACITY, temporaryBlocks } from './beliefs.js';
+import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, failureCounters, CAPACITY, temporaryBlocks, crates, crateTargets, crateCooldowns, setIsCrateBlocking, IsCrateBlocking } from './beliefs.js';
 import { distance } from './utils.js';
 import { IntentionRevisionRevise } from './agent.js';
-import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary } from './plans.js';
+import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary, SolveCrate } from './plans.js';
 
 // ─── Belief Revision (Socket Listeners) ──────────────────────────────────────
 socket.onConfig( config => {
@@ -41,6 +41,7 @@ socket.onYou( ( {id, name, x, y, score} ) => {
 
 function updateTileBelief( x, y, type ) {
     const t = type.toString();
+    const key = `${x}_${y}`;
 
     const delIdx = deliveryTiles.findIndex( d => d.x == x && d.y == y );
     if ( t == '2' ) { if ( delIdx === -1 ) deliveryTiles.push( {x, y} ); }
@@ -49,6 +50,13 @@ function updateTileBelief( x, y, type ) {
     const spawnIdx = spawnTiles.findIndex( s => s.x == x && s.y == y );
     if ( t == '1' ) { if ( spawnIdx === -1 ) spawnTiles.push( {x, y} ); }
     else            { if ( spawnIdx !== -1 ) spawnTiles.splice( spawnIdx, 1 ); }
+
+    // crates logic
+    if ( t == '5!' || t == '5' ) { 
+        crateTargets.set(key, {x, y}); 
+        // console.log(`Crate tile detected at (${x}, ${y})`); // Debug log for crate detection
+    } 
+    else { crateTargets.delete(key); }
 }
 
 // Gaussian KDE over spawn tiles. Bandwidth = observation_distance.
@@ -87,14 +95,30 @@ socket.onMap( (width, height, tile) => {
     recomputeSpawnWeights();
 });
 
-socket.onTile( ( tile ) => {
-    const {x, y, type} = tile;
-    mapBeliefs.set( `${x}_${y}`, tile );
-    updateTileBelief( x, y, type );
-    recomputeSpawnWeights();
-} );
+// socket.onTile( ( tile ) => {
+//     const {x, y, type} = tile;
+//     console.log( `[tile] (${x}, ${y}) -> ${type}` );
+//     mapBeliefs.set( `${x}_${y}`, tile );
+//     updateTileBelief( x, y, type );
+//     recomputeSpawnWeights();
+// } );
 
 socket.onSensing( ( sensing ) => {
+    
+    // console.log(sensing.crates)
+
+    for (const c of sensing.crates) {
+        const key = `${c.x}_${c.y}`;
+        crates.set(key, {x: c.x, y: c.y});
+        // console.log(`Crate detected at (${c.x}, ${c.y})`); // Debug log for crate detection
+    }
+    for ( const [id] of crates ) {
+        if ( !sensing.crates.find( c => `${c.x}_${c.y}` == id ) ) {
+            crates.delete( id );
+            // console.log(`Crate with ID ${id} removed from beliefs`); // Debug log for crate removal
+        }
+    }
+
     for ( const p of sensing.parcels ) parcels.set( p.id, p );
     for ( const [id] of parcels ) {
         if ( !sensing.parcels.find( p => p.id == id ) ) parcels.delete( id );
@@ -135,9 +159,8 @@ export function optionsGeneration () {
     if ( carried.length < CAPACITY ) {
         for ( const p of available ) {
 
-            // Ignore parcels on frustrated tiles
+            // Ignore parcels on temporary blocked tiles
             const key = `${Math.round(p.x)}_${Math.round(p.y)}`;
-            // if (frustrationBlocks.has(key) && frustrationBlocks.get(key) > Date.now()) continue;
             if (temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now()) continue;
             
             const closerAgentExists = Array.from( agents.values() ).some(
@@ -145,6 +168,54 @@ export function optionsGeneration () {
             );
             if ( !closerAgentExists ) {
                 myAgent.push( [ 'go_pick_up', p.x, p.y, p.id ] );
+            }
+        }
+    }
+
+    // use pddl to solve crate puzzles when we detect a crate is blocking the way (i.e. we are adjacent to a crate and fail to move into its tile)
+    if(IsCrateBlocking) {
+        console.log("A crate is currently blocking the way. Attempting to solve nearby crates if possible.");
+
+        setIsCrateBlocking(false); // reset the flag for the next sensing cycle
+
+        if (crates.size > 0 && crateTargets.size > 0) {
+            const now = Date.now();
+
+            // console.log(`Current crates: ${Array.from(crates.values()).map(c => `(${c.x}, ${c.y})`).join(', ')}`); // Debug log for current crates
+
+            // 1. Filter out any crates that are currently on the cooldown
+            const validCrates = Array.from(crates.values()).filter(c => {
+                const key = `${c.x}_${c.y}`;
+                const isOnTarget = crateTargets.has(key);
+                return (!crateCooldowns.has(key) || crateCooldowns.get(key) < now) || !isOnTarget;
+            });
+            // console.log(`Valid crates after cooldown and target filtering: ${validCrates.map(c => `(${c.x}, ${c.y})`).join(', ')}`); // Debug log for valid crates
+
+            if (validCrates.length > 0) {
+                // Find the nearest valid crate to me
+                const nearestCrate = validCrates.reduce((best, c) => {
+                    const d = distance(me, c);
+                    return d < best.d ? { c, d } : best;
+                }, { c: null, d: Infinity }).c;
+                
+                // console.log(`Nearest valid crate is at (${nearestCrate.x}, ${nearestCrate.y})`); // Debug log for nearest crate
+                // Only trigger if we are exactly adjacent (distance <= 1)
+                if (distance(me, nearestCrate) <= 5) {
+                    const nearestTarget = Array.from(crateTargets.values()).filter(t => {
+                        const key = `${t.x}_${t.y}`;
+                        // const distToCrate = distance(nearestCrate, t);
+                        // console.log(`Evaluating crate target at (${t.x}, ${t.y}) with distance to crate: ${distToCrate}`); // Debug log for target evaluation
+                        return !crates.has(key); // Ensure target isn't occupied by another crate
+                    }).reduce((best, t) => {
+                        const d = distance(nearestCrate, t);
+                        return d < best.d ? { t, d } : best;
+                    }, { t: null, d: Infinity }).t;
+                    console.log(`Nearest valid target is at (${nearestTarget.x}, ${nearestTarget.y})`); // Debug log for nearest target
+                    if (nearestTarget) {
+                        console.log(`Proposing to solve crate at (${nearestCrate.x}, ${nearestCrate.y}) with target at (${nearestTarget.x}, ${nearestTarget.y})`); // Debug log for crate solving proposal
+                        myAgent.push( [ 'solve_crate', nearestCrate.x, nearestCrate.y, nearestTarget.x, nearestTarget.y ] );
+                    }
+                }
             }
         }
     }
@@ -160,6 +231,8 @@ socket.onYou( optionsGeneration );
 const myAgent = new IntentionRevisionRevise();
 
 myAgent.loop();
+
+planLibrary.push( SolveCrate );
 
 planLibrary.push( GoPickUp );
 planLibrary.push( GoDeliver );
