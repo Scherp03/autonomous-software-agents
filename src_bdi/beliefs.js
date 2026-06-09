@@ -82,3 +82,13 @@ export const gameConfig = {
 };
 
 export const CAPACITY = 8;
+
+export let IsCrateBlocking = false;
+
+/**
+ * 
+ * @param {boolean} value 
+ */
+export function setIsCrateBlocking(value) {
+    IsCrateBlocking = value;
+}

@@ -1,4 +1,4 @@
-import { mapBeliefs, temporaryBlocks } from './beliefs.js';
+import { crateCooldowns, mapBeliefs, temporaryBlocks } from './beliefs.js';
 
 const DIRS = [
     { dir: 'right', dx:  1, dy:  0, blockedBy: '←' },
@@ -10,7 +10,7 @@ const DIRS = [
 export function canEnter( nx, ny, blockedBy ) {
     const key = `${nx}_${ny}`;
 
-    if ( temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now() ) {
+    if ( (temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now()) || (crateCooldowns.has(key) && crateCooldowns.get(key) > Date.now()) ) {
         return false;
     }
 

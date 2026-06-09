@@ -5,7 +5,7 @@ import { astar, astarDistance } from './pathfinding.js';
 import { IntentionDeliberation } from './agent.js';
 import { onlineSolver, Beliefset, PddlProblem } from "@unitn-asa/pddl-client";
 import { crateDomain } from '../planner/pddl.js';
-import { crates, crateTargets } from './beliefs.js';
+import { crates, setIsCrateBlocking } from './beliefs.js';
 
 /**
  * @typedef { {
@@ -229,6 +229,11 @@ export class AStarMove extends PlanBase {
                 if (move == 'down')  blockY -= 1;
                 console.log(`Blacklisting tile (${blockX},${blockY}) temporarily.`);
 
+                if (crates.has(`${blockX}_${blockY}`)) {
+                    // console.log(`The blocked tile (${blockX},${blockY}) has a crate! Setting IsCrateBlocking to true.`);
+                    setIsCrateBlocking(true);
+                }
+
                 temporaryBlocks.set(`${blockX}_${blockY}`, Date.now() + 2000);
 
                 await new Promise(res => setTimeout(res, 100));
@@ -285,7 +290,7 @@ export class SolveCrate extends PlanBase {
         }
 
         // 3. Declare Entities
-        beliefSet.declare(`sokoban x${Math.round(me.x)} y${Math.round(me.y)}`);
+        beliefSet.declare(`agent x${Math.round(me.x)} y${Math.round(me.y)}`);
         // beliefSet.declare(`crate x${crateX} y${crateY}`);
 
         // 4. Declare Walls (Everything un-walkable)

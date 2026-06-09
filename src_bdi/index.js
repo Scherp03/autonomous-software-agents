@@ -1,5 +1,5 @@
 import { socket } from './socket.js';
-import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, failureCounters, CAPACITY, temporaryBlocks, crates, crateTargets, crateCooldowns } from './beliefs.js';
+import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, failureCounters, CAPACITY, temporaryBlocks, crates, crateTargets, crateCooldowns, setIsCrateBlocking, IsCrateBlocking } from './beliefs.js';
 import { distance } from './utils.js';
 import { IntentionRevisionRevise } from './agent.js';
 import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary, SolveCrate } from './plans.js';
@@ -159,9 +159,8 @@ export function optionsGeneration () {
     if ( carried.length < CAPACITY ) {
         for ( const p of available ) {
 
-            // Ignore parcels on frustrated tiles
+            // Ignore parcels on temporary blocked tiles
             const key = `${Math.round(p.x)}_${Math.round(p.y)}`;
-            // if (frustrationBlocks.has(key) && frustrationBlocks.get(key) > Date.now()) continue;
             if (temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now()) continue;
             
             const closerAgentExists = Array.from( agents.values() ).some(
@@ -173,42 +172,49 @@ export function optionsGeneration () {
         }
     }
 
-    if (crates.size > 0 && crateTargets.size > 0) {
-        const now = Date.now();
+    // use pddl to solve crate puzzles when we detect a crate is blocking the way (i.e. we are adjacent to a crate and fail to move into its tile)
+    if(IsCrateBlocking) {
+        console.log("A crate is currently blocking the way. Attempting to solve nearby crates if possible.");
 
-        // console.log(`Current crates: ${Array.from(crates.values()).map(c => `(${c.x}, ${c.y})`).join(', ')}`); // Debug log for current crates
+        setIsCrateBlocking(false); // reset the flag for the next sensing cycle
 
-        // 1. Filter out any crates that are currently on the cooldown
-        const validCrates = Array.from(crates.values()).filter(c => {
-            const key = `${c.x}_${c.y}`;
-            const isOnTarget = crateTargets.has(key);
-            return (!crateCooldowns.has(key) || crateCooldowns.get(key) < now) || !isOnTarget;
-        });
-        // console.log(`Valid crates after cooldown and target filtering: ${validCrates.map(c => `(${c.x}, ${c.y})`).join(', ')}`); // Debug log for valid crates
+        if (crates.size > 0 && crateTargets.size > 0) {
+            const now = Date.now();
 
-        if (validCrates.length > 0) {
-            // Find the nearest valid crate to me
-            const nearestCrate = validCrates.reduce((best, c) => {
-                const d = distance(me, c);
-                return d < best.d ? { c, d } : best;
-            }, { c: null, d: Infinity }).c;
-            
-            // console.log(`Nearest valid crate is at (${nearestCrate.x}, ${nearestCrate.y})`); // Debug log for nearest crate
-            // Only trigger if we are exactly adjacent (distance <= 1)
-            if (distance(me, nearestCrate) <= 1) {
-                const nearestTarget = Array.from(crateTargets.values()).filter(t => {
-                    const key = `${t.x}_${t.y}`;
-                    // const distToCrate = distance(nearestCrate, t);
-                    // console.log(`Evaluating crate target at (${t.x}, ${t.y}) with distance to crate: ${distToCrate}`); // Debug log for target evaluation
-                    return !crates.has(key); // Ensure target isn't occupied by another crate
-                }).reduce((best, t) => {
-                    const d = distance(nearestCrate, t);
-                    return d < best.d ? { t, d } : best;
-                }, { t: null, d: Infinity }).t;
-                // console.log(`Nearest valid target is at (${nearestTarget.x}, ${nearestTarget.y})`); // Debug log for nearest target
-                if (nearestTarget) {
-                    console.log(`Proposing to solve crate at (${nearestCrate.x}, ${nearestCrate.y}) with target at (${nearestTarget.x}, ${nearestTarget.y})`); // Debug log for crate solving proposal
-                    myAgent.push( [ 'solve_crate', nearestCrate.x, nearestCrate.y, nearestTarget.x, nearestTarget.y ] );
+            // console.log(`Current crates: ${Array.from(crates.values()).map(c => `(${c.x}, ${c.y})`).join(', ')}`); // Debug log for current crates
+
+            // 1. Filter out any crates that are currently on the cooldown
+            const validCrates = Array.from(crates.values()).filter(c => {
+                const key = `${c.x}_${c.y}`;
+                const isOnTarget = crateTargets.has(key);
+                return (!crateCooldowns.has(key) || crateCooldowns.get(key) < now) || !isOnTarget;
+            });
+            // console.log(`Valid crates after cooldown and target filtering: ${validCrates.map(c => `(${c.x}, ${c.y})`).join(', ')}`); // Debug log for valid crates
+
+            if (validCrates.length > 0) {
+                // Find the nearest valid crate to me
+                const nearestCrate = validCrates.reduce((best, c) => {
+                    const d = distance(me, c);
+                    return d < best.d ? { c, d } : best;
+                }, { c: null, d: Infinity }).c;
+                
+                // console.log(`Nearest valid crate is at (${nearestCrate.x}, ${nearestCrate.y})`); // Debug log for nearest crate
+                // Only trigger if we are exactly adjacent (distance <= 1)
+                if (distance(me, nearestCrate) <= 5) {
+                    const nearestTarget = Array.from(crateTargets.values()).filter(t => {
+                        const key = `${t.x}_${t.y}`;
+                        // const distToCrate = distance(nearestCrate, t);
+                        // console.log(`Evaluating crate target at (${t.x}, ${t.y}) with distance to crate: ${distToCrate}`); // Debug log for target evaluation
+                        return !crates.has(key); // Ensure target isn't occupied by another crate
+                    }).reduce((best, t) => {
+                        const d = distance(nearestCrate, t);
+                        return d < best.d ? { t, d } : best;
+                    }, { t: null, d: Infinity }).t;
+                    console.log(`Nearest valid target is at (${nearestTarget.x}, ${nearestTarget.y})`); // Debug log for nearest target
+                    if (nearestTarget) {
+                        console.log(`Proposing to solve crate at (${nearestCrate.x}, ${nearestCrate.y}) with target at (${nearestTarget.x}, ${nearestTarget.y})`); // Debug log for crate solving proposal
+                        myAgent.push( [ 'solve_crate', nearestCrate.x, nearestCrate.y, nearestTarget.x, nearestTarget.y ] );
+                    }
                 }
             }
         }
