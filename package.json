@@ -16,8 +16,8 @@
   "main": "index.js",
   "module": "index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "bdi": "node src_bdi/index.js",
+    "start": "node src_bdi/index.js",
+    "bdi": "node src_bdi/index.js",   
     "slave": "node src_slave/index.js",
     "llm": "node src_llm/index.js",
     "baseline": "node src_baseline/index.js",

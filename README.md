@@ -5,7 +5,7 @@
 npm install 
 ```
 
-**Run the main agent**
+**Run the main bdi agent**
 ```bash
 npm start
 ```

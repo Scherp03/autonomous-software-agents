@@ -1,8 +1,10 @@
 node_modules/
 .env
 
-memory.js
-no_memory.js
 test.js
 
 explanations/
+
+shared-config.json
+slave-command.json
+slave-status.json
