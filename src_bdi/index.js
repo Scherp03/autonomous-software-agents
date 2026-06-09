@@ -52,10 +52,16 @@ function updateTileBelief( x, y, type ) {
     else            { if ( spawnIdx !== -1 ) spawnTiles.splice( spawnIdx, 1 ); }
 
     // crates logic
-    if ( t == '5' ) { crates.set(key, {x, y}); } 
-    else { crates.delete(key); }
+    if ( t == '5!' ) { 
+        crateTargets.set(key, {x, y}); 
+        console.log(`Crate detected at (${x}, ${y})`); // Debug log for crate detection
+    } 
+    else { crateTargets.delete(key); }
 
-    if ( t == '5!' ) { crateTargets.set(key, {x, y}); } 
+    if ( t == '5' ) { 
+        crates.set(key, {x, y}); 
+        console.log(`Crate target detected at (${x}, ${y})`); // Debug log for crate target detection
+    } 
     else { crateTargets.delete(key); }
 }
 
@@ -97,12 +103,28 @@ socket.onMap( (width, height, tile) => {
 
 socket.onTile( ( tile ) => {
     const {x, y, type} = tile;
+    console.log( `[tile] (${x}, ${y}) -> ${type}` );
     mapBeliefs.set( `${x}_${y}`, tile );
     updateTileBelief( x, y, type );
     recomputeSpawnWeights();
 } );
 
 socket.onSensing( ( sensing ) => {
+    
+    // console.log(sensing.crates)
+
+    for (const c of sensing.crates) {
+        const key = `${c.x}_${c.y}`;
+        crates.set(key, {x: c.x, y: c.y});
+        console.log(`Crate detected at (${c.x}, ${c.y})`); // Debug log for crate detection
+    }
+    for ( const [id] of crates ) {
+        if ( !sensing.crates.find( c => `${c.x}_${c.y}` == id ) ) {
+            crates.delete( id );
+            console.log(`Crate with ID ${id} removed from beliefs`); // Debug log for crate removal
+        }
+    }
+
     for ( const p of sensing.parcels ) parcels.set( p.id, p );
     for ( const [id] of parcels ) {
         if ( !sensing.parcels.find( p => p.id == id ) ) parcels.delete( id );
@@ -160,7 +182,7 @@ export function optionsGeneration () {
     if (crates.size > 0 && crateTargets.size > 0) {
         const now = Date.now();
 
-        // 1. Filter out any crates that are currently on the 10-second cooldown
+        // 1. Filter out any crates that are currently on the cooldown
         const validCrates = Array.from(crates.values()).filter(c => {
             const key = `${c.x}_${c.y}`;
             return !crateCooldowns.has(key) || crateCooldowns.get(key) < now;
@@ -174,8 +196,11 @@ export function optionsGeneration () {
             }, { c: null, d: Infinity }).c;
             
             // Only trigger if we are exactly adjacent (distance <= 1)
-            if (nearestCrate && distance(me, nearestCrate) <= 1) {
-                const nearestTarget = Array.from(crateTargets.values()).reduce((best, t) => {
+            if (distance(me, nearestCrate) <= 1 && temporaryBlocks.has(`${nearestCrate.x}_${nearestCrate.y}`)) {
+                const nearestTarget = Array.from(crateTargets.values()).filter(t => {
+                    const key = `${t.x}_${t.y}`;
+                    return !crates.has(key);
+                }).reduce((best, t) => {
                     const d = distance(nearestCrate, t);
                     return d < best.d ? { t, d } : best;
                 }, { t: null, d: Infinity }).t;

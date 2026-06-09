@@ -59,7 +59,7 @@ export class IntentionRevisionRevise extends IntentionRevision {
         const decayPerStep    = gameConfig.CLOCK / decayIntervalMs;
 
         if ( action === 'solve_crate' ) {
-            return 100; // Placeholder utility for crate solving, as it doesn't directly relate to parcels. Adjust as needed.
+            return 1000; // Placeholder utility for crate solving, as it doesn't directly relate to parcels. Adjust as needed.
         }
 
 
