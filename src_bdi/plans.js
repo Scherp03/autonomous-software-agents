@@ -227,7 +227,6 @@ export class AStarMove extends PlanBase {
                 if (move == 'left')  blockX -= 1;
                 if (move == 'up')    blockY += 1;
                 if (move == 'down')  blockY -= 1;
-                
                 console.log(`Blacklisting tile (${blockX},${blockY}) temporarily.`);
 
                 temporaryBlocks.set(`${blockX}_${blockY}`, Date.now() + 2000);
@@ -281,13 +280,13 @@ export class SolveCrate extends PlanBase {
             beliefSet.declare(`right x${i+1} x${i}`); // x(i+1) is right of x(i)
         }
         for(let j = minY; j < maxY; j++) {
-            beliefSet.declare(`down y${j} y${j+1}`);  // assuming y increases upwards, adjust if your map is inverted
+            beliefSet.declare(`down y${j} y${j+1}`);  
             beliefSet.declare(`up y${j+1} y${j}`);
         }
 
         // 3. Declare Entities
         beliefSet.declare(`sokoban x${Math.round(me.x)} y${Math.round(me.y)}`);
-        beliefSet.declare(`crate x${crateX} y${crateY}`);
+        // beliefSet.declare(`crate x${crateX} y${crateY}`);
 
         // 4. Declare Walls (Everything un-walkable)
         for (let x = minX; x <= maxX; x++) {
@@ -339,6 +338,7 @@ export class SolveCrate extends PlanBase {
         }
 
         if (!plan || plan.length === 0) {
+            crateCooldowns.set(`${crateX}_${crateY}`, Date.now() + 8000);
             throw ['no pddl plan found'];
         }
         // 7. Execute Plan directly using Socket
