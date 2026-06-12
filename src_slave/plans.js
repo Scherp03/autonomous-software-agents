@@ -446,24 +446,24 @@ export class HandoffSlave extends PlanBase {
         // T_retreat is where the LLM moves after dropping (one step in ANTI_DIR from T_llm)
         const DIR_DELTA = { right:{dx:1,dy:0}, left:{dx:-1,dy:0}, up:{dx:0,dy:1}, down:{dx:0,dy:-1} }[ dir_str ];
         const T_retreat_key = `${T_llm_x - DIR_DELTA.dx}_${T_llm_y - DIR_DELTA.dy}`;
-
         // Navigate to T_slave
         await this.subIntention( [ 'go_to', T_slave_x, T_slave_y ] );
         if ( this.stopped ) throw [ 'stopped' ];
 
         // Signal LLM: slave is in position
         writeSlaveStatus( { handoffPhase: 'atPosition' } );
-        console.log( `[slave] Handoff: at T_slave (${T_slave_x},${T_slave_y}), waiting for HANDOFF_MOVE_IN...` );
+        console.log( `[handoff-slave] At T_slave (${T_slave_x},${T_slave_y}). Waiting for HANDOFF_MOVE_IN...` );
 
         // Wait for LLM to drop and vacate T_llm
         await waitForHandoffMoveIn();
         if ( this.stopped ) throw [ 'stopped' ];
 
         // Step 3: move into T_llm (now vacated by LLM)
-        await socket.emitMove( ANTI_DIR );
+        if ( !await socket.emitMove( ANTI_DIR ) ) throw [ 'handoff: slave failed to enter T_llm' ];
 
         // Step 4: pick up LLM's parcels immediately
-        await socket.emitPickup();
+        const picked = await socket.emitPickup();
+        console.log( `[handoff-slave] Picked up ${picked.length} parcels.` );
 
         // Step 5: enemy check → drop everything (slave's own + LLM's)
         // Exclude T_retreat — the LLM just moved there and is supposed to be there
@@ -472,11 +472,15 @@ export class HandoffSlave extends PlanBase {
         await socket.emitPutdown();
 
         // Step 6: vacate T_llm so LLM can step in
-        await socket.emitMove( dir_str );
+        if ( !await socket.emitMove( dir_str ) ) throw [ 'handoff: slave failed to vacate T_llm' ];
+
+        // Block T_llm for 5 s so optionsGeneration doesn't propose go_pick_up for the parcels
+        // sitting there before the LLM (one step away at T_retreat) can collect them.
+        temporaryBlocks.set( `${T_llm_x}_${T_llm_y}`, Date.now() + 5000 );
 
         // Signal LLM: T_llm is free; reset carriedCount so the monitor doesn't re-trigger immediately
         writeSlaveStatus( { handoffPhase: 'vacated', carriedCount: 0 } );
-        console.log( '[slave] Handoff: vacated T_llm. Dance complete.' );
+        console.log( '[handoff-slave] Vacated T_llm. Dance complete.' );
         return true;
     }
 }

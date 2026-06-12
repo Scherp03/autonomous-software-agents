@@ -6,6 +6,7 @@ import { fileURLToPath } from "url";
 import { ADMIN_ID, ADMIN_NAME, dynamicRules, mapBeliefs, me, parcels, handoffState, mapWidthxHeight, THRESHOLD_FOR_HANDOFF, SLAVE_NAME, SLAVE_ID } from "./beliefs.js";
 import { socket } from "./socket.js";
 import { distance } from "./utils.js";
+import { astarDistance } from "./pathfinding.js";
 
 const __dir = dirname( fileURLToPath( import.meta.url ) );
 const SHARED_CONFIG_PATH = join( __dir, '..', 'shared-config.json' );
@@ -17,25 +18,33 @@ export function setSelfAgent ( agent ) { selfAgentRef = agent; }
 
 let handoffConfig = null;
 
+const INVALID_CORRIDOR_TYPES = new Set( [ '0', '2', '↑', '↓', '←', '→' ] );
+
 function findHandoffCorridor ( myPos, slavePos ) {
     const DIRS = [
         { dx: 1, dy: 0, name: 'right' }, { dx: -1, dy: 0, name: 'left' },
         { dx: 0, dy: 1, name: 'up' },   { dx: 0, dy: -1, name: 'down' },
     ];
+    const valid = t => t && !INVALID_CORRIDOR_TYPES.has( t.type );
+
     let best = null, bestScore = Infinity;
     for ( const [ , tile ] of mapBeliefs ) {
-        if ( tile.type === '0' ) continue;
+        if ( !valid( tile ) ) continue;
         for ( const dir of DIRS ) {
             const T_slave   = { x: tile.x + dir.dx, y: tile.y + dir.dy };
             const T_retreat = { x: tile.x - dir.dx, y: tile.y - dir.dy };
             const st = mapBeliefs.get( `${T_slave.x}_${T_slave.y}` );
             const rt = mapBeliefs.get( `${T_retreat.x}_${T_retreat.y}` );
-            if ( !st || st.type === '0' ) continue;
-            if ( !rt || rt.type === '0' ) continue;
+            if ( !valid( st ) || !valid( rt ) ) continue;
             const score = distance( myPos, tile ) + distance( slavePos, T_slave );
             if ( score < bestScore ) { bestScore = score; best = { T_llm: tile, T_slave, T_retreat, dir: dir.name }; }
         }
     }
+
+    if ( !best ) return null;
+    if ( astarDistance( myPos, best.T_llm ) === Infinity ) return null;
+    if ( astarDistance( slavePos, best.T_slave ) === Infinity ) return null;
+
     return best;
 }
 
@@ -1003,9 +1012,8 @@ socket.onSensing( () => {
         selfAgentRef.pushUrgent( [
             'handoff_llm',
             corridor.T_llm.x, corridor.T_llm.y,
-            corridor.T_retreat.x, corridor.T_retreat.y,
             corridor.T_slave.x, corridor.T_slave.y,
             corridor.dir,
         ] );
-    } catch ( e ) { console.error( '[handoff] Monitor error:', e.message ); }
+    } catch ( e ) { handoffState.inProgress = false; console.error( '[handoff] Monitor error:', e.message ); }
 } );

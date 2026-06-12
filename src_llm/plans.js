@@ -437,10 +437,11 @@ async function waitForClearHandoffZone ( T_llm, excludeKey = null, timeout = 600
 export class HandoffLLM extends PlanBase {
     static isApplicableTo ( action ) { return action === 'handoff_llm'; }
 
-    async execute ( action, T_llm_x, T_llm_y, T_retreat_x, T_retreat_y, T_slave_x, T_slave_y, dir_str ) {
+    async execute ( action, T_llm_x, T_llm_y, T_slave_x, T_slave_y, dir_str ) {
         if ( this.stopped ) throw [ 'stopped' ];
         const T_llm    = { x: T_llm_x, y: T_llm_y };
         const ANTI_DIR = oppositeDir( dir_str );
+        console.log( `[handoff-llm] Start — T_llm(${T_llm_x},${T_llm_y}) T_slave(${T_slave_x},${T_slave_y}) dir=${dir_str}` );
 
         try {
             // Tell slave where to go and send corridor geometry
@@ -460,8 +461,8 @@ export class HandoffLLM extends PlanBase {
             if ( this.stopped ) throw [ 'stopped' ];
             await socket.emitPutdown();
 
-            // Step 2: LLM vacates T_llm immediately (no check)
-            await socket.emitMove( ANTI_DIR );
+            // Step 2: LLM vacates T_llm
+            if ( !await socket.emitMove( ANTI_DIR ) ) throw [ 'handoff: LLM failed to vacate T_llm' ];
 
             // Signal slave to start its side of the dance
             writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'HANDOFF_MOVE_IN' } ) );
@@ -470,11 +471,12 @@ export class HandoffLLM extends PlanBase {
             await pollSlaveHandoffPhase( 'vacated', 90000 );
             if ( this.stopped ) throw [ 'stopped' ];
 
-            // Step 7: LLM moves back to T_llm (no check — parcels are alone)
-            await socket.emitMove( dir_str );
+            // Step 7: LLM moves back to T_llm
+            if ( !await socket.emitMove( dir_str ) ) throw [ 'handoff: LLM failed to re-enter T_llm' ];
 
             // Step 8: LLM picks up everything
-            await socket.emitPickup();
+            const picked = await socket.emitPickup();
+            console.log( `[handoff-llm] Picked up ${picked.length} parcels. Delivering...` );
 
             // Step 9: deliver to nearest delivery tile
             const nearestDelivery = deliveryTiles.reduce(
@@ -484,7 +486,7 @@ export class HandoffLLM extends PlanBase {
             if ( nearestDelivery )
                 await this.subIntention( [ 'go_deliver', nearestDelivery.x, nearestDelivery.y ] );
 
-            console.log( '[handoff] Complete. LLM delivered all parcels.' );
+            console.log( '[handoff-llm] Complete.' );
             return true;
         } finally {
             handoffState.lastCompletedAt = Date.now();
