@@ -1,8 +1,11 @@
 import { socket } from './socket.js';
-import { me, mapBeliefs, spawnTiles, spawnWeights, parcels, gameConfig, temporaryBlocks, failureCounters } from './beliefs.js';
+import { me, mapBeliefs, spawnTiles, spawnWeights, parcels, gameConfig, temporaryBlocks, failureCounters, crateCooldowns, agents } from './beliefs.js';
 import { distance, weightedRandom } from './utils.js';
 import { astar, astarDistance } from './pathfinding.js';
 import { IntentionDeliberation } from './agent.js';
+import { onlineSolver, Beliefset, PddlProblem } from "@unitn-asa/pddl-client";
+import { crateDomain } from '../planner/pddl.js';
+import { crates, setIsCrateBlocking } from './beliefs.js';
 
 /**
  * @typedef { {
@@ -22,10 +25,7 @@ import { IntentionDeliberation } from './agent.js';
  * } } PlanClass
  */
 
-/**
- * Plan library
- * @type { PlanClass [] }
- */
+/** @type { PlanClass [] } */
 export const planLibrary = [];
 
 /**
@@ -39,12 +39,8 @@ class PlanBase {
     }
     get stopped () { return this.#stopped; }
 
-    // refers to the caller of the plan, for example an IntentionDeliberation
     #parent;
-
-    /**
-     * @param { PlanBase } parent
-     */
+    /** @param { PlanBase } parent */
     constructor ( parent ) { this.#parent = parent; }
 
     /** @type { function(...any): void } */
@@ -57,7 +53,7 @@ class PlanBase {
     #sub_intentions = [];
 
     /**
-     * @param { [string, ...any] } predicate 
+     * @param { [string, ...any] } predicate
      * @returns { Promise<boolean> }
      */
     async subIntention ( predicate ) {
@@ -71,18 +67,11 @@ class PlanBase {
  * @implements { Plan }
  */
 export class Explore extends PlanBase {
-    
-    /**
-     * @type { function( string, ...any ) : boolean } 
-     */
     static isApplicableTo ( explore ) { return explore == 'explore'; }
 
-    /**
-     * @type { function( string, ...any ) : Promise<boolean> } 
-     */
     async execute () {
         if ( this.stopped ) throw [ 'stopped' ];
-        
+
         let target;
 
         if ( spawnTiles.length > 0 ) {
@@ -116,12 +105,12 @@ export class Explore extends PlanBase {
                 this.log( 'explore failed to go_to target', target, 'error:', error );
             }
         }
-    
+
         const dirs = ['up', 'down', 'left', 'right'];
         const randomDir = dirs[Math.floor(Math.random() * dirs.length)];
         await socket.emitMove(randomDir);
-        await new Promise(res => setTimeout(res, 100)); 
-        
+        await new Promise(res => setTimeout(res, 100));
+
         return true;
     }
 }
@@ -141,17 +130,17 @@ export class GoPickUp extends PlanBase {
     async execute ( go_pick_up, x, y, id ) {
         if ( this.stopped ) throw [ 'stopped' ];
         await this.subIntention( [ 'go_to', x, y ] );
-        
+
         if ( this.stopped ) throw [ 'stopped' ];
         await socket.emitPickup();
         return true;
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class GoDeliver extends PlanBase {
-    /**
-     * @type { function( string, ...any ) : boolean } 
-     */
     static isApplicableTo ( go_deliver ) { return go_deliver == 'go_deliver'; }
 
     /**
@@ -160,11 +149,11 @@ export class GoDeliver extends PlanBase {
     async execute ( go_deliver, x, y ) {
         if ( this.stopped ) throw [ 'stopped' ];
         await this.subIntention( [ 'go_to', x, y ] );
-        
+
         if ( this.stopped ) throw [ 'stopped' ];
         await socket.emitPutdown();
-        // After delivery, remove the delivered parcels from beliefs to prevent re-planning on them. 
-        for ( const [ id, p ] of parcels ) {                  
+        // Remove delivered parcels from beliefs to prevent re-planning on them.
+        for ( const [ id, p ] of parcels ) {
             if ( p.carriedBy === me.id ) parcels.delete( id );
         }
         return true;
@@ -189,32 +178,23 @@ export class AStarMove extends PlanBase {
             if ( this.stopped ) throw [ 'stopped' ];
 
             const path = astar( { x: me.x, y: me.y }, { x: targetX, y: targetY } );
-            
+
             if ( !path || path.length == 0 ) {
-                await new Promise(res => setTimeout(res, 100)); 
-                throw [ 'no path to', targetX, targetY ]; 
+                await new Promise(res => setTimeout(res, 100));
+                throw [ 'no path to', targetX, targetY ];
             }
 
             const move = path[ 0 ];
             const result = await socket.emitMove( move );
 
             if ( !result ) {
-                // this.log( `Move ${move} failed. Blacklisting tile temporarily.` );
-
-                // Increment failure counter for this target
                 let currentFailures = failureCounters.get(targetKey) || 0;
                 failureCounters.set(targetKey, currentFailures + 1);
 
-                console.log(failureCounters.get(targetKey))
-
-                // If stuck for 5 tries, abandon the goal for 15 seconds!
+                // After 5 failed moves, block target for 15s
                 if ( failureCounters.get(targetKey) >= 5 ) {
-                    console.log(`[Stuck] Bumped 5 times. Abandoning target ${targetX},${targetY} for 15s.`);
-                    // frustrationBlocks.set(targetKey, Date.now() + 15000);
-
                     temporaryBlocks.set(targetKey, Date.now() + 15000);
-
-                    failureCounters.set(targetKey, 0); // reset counter after applying frustration block
+                    failureCounters.set(targetKey, 0);
                     throw [ 'stuck', targetX, targetY ];
                 }
 
@@ -224,6 +204,11 @@ export class AStarMove extends PlanBase {
                 if (move == 'left')  blockX -= 1;
                 if (move == 'up')    blockY += 1;
                 if (move == 'down')  blockY -= 1;
+                console.log(`Blacklisting tile (${blockX},${blockY}) temporarily.`);
+
+                if (crates.has(`${blockX}_${blockY}`)) {
+                    setIsCrateBlocking(true);
+                }
 
                 temporaryBlocks.set(`${blockX}_${blockY}`, Date.now() + 2000);
 
@@ -231,8 +216,7 @@ export class AStarMove extends PlanBase {
                 continue;
             }
 
-            // Opportunistic pickup: grab any unclaimed parcel on the new tile without
-            // interrupting the current plan. Uses the confirmed position from the move result.
+            // Opportunistic pickup: grab unclaimed parcel on the new tile without interrupting the plan.
             const { x: newX, y: newY } = result;
             const carried = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id );
             if ( carried.length < gameConfig.GAME.player.capacity ) {
@@ -251,7 +235,110 @@ export class AStarMove extends PlanBase {
     }
 }
 
+export class SolveCrate extends PlanBase {
+    /**
+     * @type { function( string, ...any ) : boolean } 
+     */
+    static isApplicableTo ( action ) { return action === 'solve_crate'; }
 
+    /**
+     * @type { function( string, ...any ) : Promise<boolean> } 
+     */
+    async execute ( action, crateX, crateY, targetX, targetY ) {
+        if ( this.stopped ) throw [ 'stopped' ];
 
-// // Export the array so the BDI engine can iterate over available plans
-// export const planLibrary = [ GoPickUp, GoDeliver, AStarMove, Explore ];
+        const beliefSet = new Beliefset();
+
+        // Bounding box around involved positions to keep the solver fast
+        const radius = 3;
+        const minX = Math.min(Math.round(me.x), crateX, targetX) - radius;
+        const maxX = Math.max(Math.round(me.x), crateX, targetX) + radius;
+        const minY = Math.min(Math.round(me.y), crateY, targetY) - radius;
+        const maxY = Math.max(Math.round(me.y), crateY, targetY) + radius;
+
+        // 1. Declare objects (coordinates)
+        for(let i = minX; i <= maxX; i++) beliefSet.objects.push(`x${i}`);
+        for(let i = minY; i <= maxY; i++) beliefSet.objects.push(`y${i}`);
+
+        // 2. Declare grid connectivity
+        for(let i = minX; i < maxX; i++) {
+            beliefSet.declare(`left x${i} x${i+1}`);
+            beliefSet.declare(`right x${i+1} x${i}`);
+        }
+        for(let j = minY; j < maxY; j++) {
+            beliefSet.declare(`down y${j} y${j+1}`);
+            beliefSet.declare(`up y${j+1} y${j}`);
+        }
+
+        // 3. Declare entities
+        beliefSet.declare(`agent x${Math.round(me.x)} y${Math.round(me.y)}`);
+
+        // 4. Declare walls (unwalkable tiles, out-of-bounds, and agent-occupied tiles)
+        for (let x = minX; x <= maxX; x++) {
+            for(let y = minY; y <= maxY; y++) {
+                const key = `${x}_${y}`;
+                const tile = mapBeliefs.get(key);
+
+                if (crates.has(key)) {
+                    beliefSet.declare(`crate x${x} y${y}`);
+                }
+
+                const hasAgent = Array.from(agents.values()).some(
+                    a => Math.round(a.x) === x && Math.round(a.y) === y
+                );
+
+                if (!tile || tile.type === '0' || hasAgent) {
+                    beliefSet.declare(`wall x${x} y${y}`);
+                }
+            }
+        }
+
+        // 5. Construct problem
+        const pddlProblem = new PddlProblem(
+            'push-crate',
+            beliefSet.objects.join(' '),
+            beliefSet.toPddlString(),
+            `and (crate x${targetX} y${targetY})`
+        );
+
+        this.log('Asking PDDL Solver to plan Sokoban path...');
+
+        // 6. Call solver
+        let plan;
+        try {
+            plan = await onlineSolver(crateDomain, pddlProblem.toPddlString());
+        } catch (err) {
+            this.log('PDDL solver failed/timed out. Blacklisting crate tile.');
+            temporaryBlocks.set(`${crateX}_${crateY}`, Date.now() + 5000);
+            throw ['pddl solver failed or timed out', err];
+        }
+
+        if (!plan || plan.length === 0) {
+            crateCooldowns.set(`${crateX}_${crateY}`, Date.now() + 8000);
+            throw ['no pddl plan found'];
+        }
+
+        // 7. Execute plan — actions look like: { action: 'move-right', args: ['x1', 'x2', 'y1'] }
+        for (const steps of plan) {
+            if (this.stopped) throw ['stopped during execution'];
+
+            const step = steps.action.toLowerCase();
+            let moveDir = '';
+            if (step.includes('left'))  moveDir = 'left';
+            if (step.includes('right')) moveDir = 'right';
+            if (step.includes('up'))    moveDir = 'up';
+            if (step.includes('down'))  moveDir = 'down';
+
+            if (moveDir) {
+                this.log(`PDDL Step: Executing ${steps.action} -> moving ${moveDir}`);
+                await socket.emitMove(moveDir);
+                await new Promise(res => setTimeout(res, 150));
+            }
+        }
+
+        // Cooldown to prevent immediate re-planning on the same crate
+        crateCooldowns.set(`${crateX}_${crateY}`, Date.now() + 8000);
+
+        return true;
+    }
+}

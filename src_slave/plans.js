@@ -1,10 +1,10 @@
-import { writeFileSync } from 'fs';
+import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { socket } from './socket.js';
-import { me, mapBeliefs, spawnTiles, spawnWeights, agents, parcels, gameConfig, temporaryBlocks, dynamicRules, CAPACITY, failureCounters } from './beliefs.js';
+import { me, mapBeliefs, spawnTiles, spawnWeights, agents, parcels, gameConfig, temporaryBlocks, dynamicRules, CAPACITY, failureCounters, mapWidthxHeight } from './beliefs.js';
 import { distance, weightedRandom } from './utils.js';
 import { astar, astarDistance } from './pathfinding.js';
 import { IntentionDeliberation } from './agent.js';
-import { SLAVE_STATUS_PATH, waitForResume } from './slave-command.js';
+import { SLAVE_STATUS_PATH, waitForResume, waitForHandoffMoveIn } from './slave-command.js';
 
 /**
  * @typedef { {
@@ -150,6 +150,9 @@ export class GoPickUp extends PlanBase {
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class GoDeliver extends PlanBase {
     /**
      * @type { function( string, ...any ) : boolean } 
@@ -165,14 +168,17 @@ export class GoDeliver extends PlanBase {
         
         if ( this.stopped ) throw [ 'stopped' ];
         await socket.emitPutdown();
-        // After delivery, remove the delivered parcels from beliefs to prevent re-planning on them. 
-        for ( const [ id, p ] of parcels ) {                  
+        // Remove delivered parcels from beliefs to prevent re-planning on them.
+        for ( const [ id, p ] of parcels ) {
             if ( p.carriedBy === me.id ) parcels.delete( id );
         }
         return true;
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class AStarMove extends PlanBase {
     /**
      * @type { function( string, ...any ) : boolean } 
@@ -194,30 +200,21 @@ export class AStarMove extends PlanBase {
             const path = astar( { x: me.x, y: me.y }, { x: targetX, y: targetY } );
             
             if ( !path || path.length == 0 ) {
-                // await new Promise(res => setTimeout(res, 100)); 
-                throw [ 'no path to', targetX, targetY ]; 
+                throw [ 'no path to', targetX, targetY ];
             }
 
             const move = path[ 0 ];
             const result = await socket.emitMove( move );
 
             if ( !result ) {
-                // this.log( `Move ${move} failed. Blacklisting tile temporarily.` );
-
-                // Increment failure counter for this target
                 let currentFailures = failureCounters.get(targetKey) || 0;
                 failureCounters.set(targetKey, currentFailures + 1);
 
-                console.log(failureCounters.get(targetKey))
-
-                // If stuck for 5 tries, abandon the goal for 15 seconds!
+                // After 5 failed moves, block target for 15s
                 if ( failureCounters.get(targetKey) >= 5 ) {
                     console.log(`[Stuck] Bumped 5 times. Abandoning target ${targetX},${targetY} for 15s.`);
-                    // frustrationBlocks.set(targetKey, Date.now() + 15000);
-
                     temporaryBlocks.set(targetKey, Date.now() + 15000);
-
-                    failureCounters.set(targetKey, 0); // reset counter after applying frustration block
+                    failureCounters.set(targetKey, 0);
                     throw [ 'stuck', targetX, targetY ];
                 }
 
@@ -229,13 +226,10 @@ export class AStarMove extends PlanBase {
                 if (move == 'down')  blockY -= 1;
 
                 temporaryBlocks.set(`${blockX}_${blockY}`, Date.now() + 1000);
-
-                // await new Promise(res => setTimeout(res, 100));
                 continue;
             }
 
-            // Opportunistic pickup: grab any unclaimed parcel on the new tile without
-            // interrupting the current plan. Uses the confirmed position from the move result.
+            // Opportunistic pickup: grab unclaimed parcel on the new tile without interrupting the plan.
             const { x: newX, y: newY } = result;
             const carried = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id );
             if ( carried.length < CAPACITY ) {
@@ -247,19 +241,20 @@ export class AStarMove extends PlanBase {
                 );
                 if ( parcelOnTile ) await socket.emitPickup();
             }
-
-            // await new Promise(res => setTimeout(res, 100));
         }
 
         return true;
     }
 }
 
-
-
+/**
+ * @implements { Plan }
+ */
 export class GoToBonus extends PlanBase {
+    /** @type { function( string, ...any ) : boolean } */
     static isApplicableTo ( action ) { return action === 'go_to_bonus'; }
 
+    /** @type { function( string, ...any ) : Promise<boolean> } */
     async execute ( action, x, y, id ) {
         if ( this.stopped ) throw [ 'stopped' ];
         await this.subIntention( [ 'go_to', x, y ] );
@@ -271,9 +266,14 @@ export class GoToBonus extends PlanBase {
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class DropOnTile extends PlanBase {
+    /** @type { function( string, ...any ) : boolean } */
     static isApplicableTo ( action ) { return action === 'drop_on_tile'; }
 
+    /** @type { function( string, ...any ) : Promise<boolean> } */
     async execute ( action, x, y, id ) {
         if ( this.stopped ) throw [ 'stopped' ];
         await this.subIntention( [ 'go_to', x, y ] );
@@ -289,9 +289,55 @@ export class DropOnTile extends PlanBase {
     }
 }
 
+/**
+ * @implements { Plan }
+ */
+export class GoToMatchingTile extends PlanBase {
+    /** @type { function( string, ...any ) : boolean } */
+    static isApplicableTo ( action ) { return action === 'go_to_matching_tile'; }
+
+    /** @type { function( string, ...any ) : Promise<boolean> } */
+    async execute ( action, condition, pts, hold = false ) {
+        if ( this.stopped ) throw [ 'stopped' ];
+
+        let fn;
+        try { fn = new Function( 'x', 'y', `return !!(${condition})` ); }
+        catch ( e ) { throw [ `go_to_matching_tile: invalid condition: ${condition}` ]; }
+
+        const candidates = Array.from( mapBeliefs.values() )
+            .filter( t => t.type !== '0' && fn( t.x, t.y ) )
+            .sort( ( a, b ) => astarDistance( me, a ) - astarDistance( me, b ) );
+
+        if ( candidates.length === 0 )
+            throw [ `go_to_matching_tile: no walkable tiles match: ${condition}` ];
+
+        for ( const target of candidates ) {
+            if ( this.stopped ) throw [ 'stopped' ];
+            try {
+                await this.subIntention( [ 'go_to', target.x, target.y ] );
+                writeSlaveStatus( { conditionMet: true, condition, x: me.x, y: me.y } );
+                console.log( `[slave] GoToMatchingTile arrived at (${me.x},${me.y}), condition "${condition}" met. hold=${hold}` );
+                if ( hold ) {
+                    while ( !this.stopped ) {
+                        await new Promise( r => setTimeout( r, 200 ) );
+                    }
+                }
+                return true;
+            } catch ( _ ) {}
+        }
+
+        throw [ 'go_to_matching_tile: could not reach any matching tile' ];
+    }
+}
+
+/**
+ * @implements { Plan }
+ */
 export class GoToNeighborhood extends PlanBase {
+    /** @type { function( string, ...any ) : boolean } */
     static isApplicableTo ( action ) { return action === 'go_to_neighborhood'; }
 
+    /** @type { function( string, ...any ) : Promise<boolean> } */
     async execute ( action, tiles, pts ) {
         if ( this.stopped ) throw [ 'stopped' ];
 
@@ -317,11 +363,144 @@ export class GoToNeighborhood extends PlanBase {
 
         if ( !arrived ) throw [ 'go_to_neighborhood: could not reach any tile' ];
 
-        writeFileSync( SLAVE_STATUS_PATH, JSON.stringify( { arrived: true, x: me.x, y: me.y }, null, 2 ) );
+        writeSlaveStatus( { arrived: true, x: me.x, y: me.y } );
         console.log( `[slave] Arrived at neighborhood (${me.x},${me.y}), waiting for RESUME...` );
 
         await waitForResume();
-        console.log( '[slave] RESUME received, resuming normal operation.' );
+        console.log( '[slave] RESUME received, holding position...' );
+
+        // Hold position until freeze() stops this plan
+        while ( !this.stopped ) {
+            await new Promise( r => setTimeout( r, 200 ) );
+        }
+        return true;
+    }
+}
+
+/**
+ * @implements { Plan }
+ */
+export class GoToEdge extends PlanBase {
+    /** @type { function( string, ...any ) : boolean } */
+    static isApplicableTo ( action ) { return action === 'go_to_edge'; }
+
+    /** @type { function( string, ...any ) : Promise<boolean> } */
+    async execute ( action, pts ) {
+        if ( this.stopped ) throw [ 'stopped' ];
+
+        const { x: maxX, y: maxY, minX, minY } = mapWidthxHeight;
+
+        const borderTiles = Array.from( mapBeliefs.values() ).filter( t =>
+            t.type !== '0' &&
+            ( t.x === minX || t.x === maxX || t.y === minY || t.y === maxY )
+        );
+
+        if ( borderTiles.length === 0 )
+            throw [ 'go_to_edge: no border tiles found (map not loaded yet?)' ];
+
+        const sorted = borderTiles.sort( ( a, b ) =>
+            astarDistance( me, a ) - astarDistance( me, b ) );
+
+        for ( const target of sorted ) {
+            if ( this.stopped ) throw [ 'stopped' ];
+            try {
+                await this.subIntention( [ 'go_to', target.x, target.y ] );
+                writeSlaveStatus( { edgeArrived: true } );
+                console.log( `[go_to_edge] Holding at border (${target.x},${target.y})...` );
+                // Hold position until freeze() stops this plan
+                while ( !this.stopped ) {
+                    await new Promise( r => setTimeout( r, 200 ) );
+                }
+                return true;
+            } catch ( _ ) {
+                // AStarMove applied temporaryBlocks for the stuck tile; try the next one
+            }
+        }
+
+        throw [ 'go_to_edge: could not reach any border tile' ];
+    }
+}
+
+// ─── Handoff helpers ─────────────────────────────────────────────────────────
+
+function oppositeDir ( d ) { return { right: 'left', left: 'right', up: 'down', down: 'up' }[ d ]; }
+
+function writeSlaveStatus ( updates ) {
+    try {
+        const prev = existsSync( SLAVE_STATUS_PATH ) ? JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) ) : {};
+        writeFileSync( SLAVE_STATUS_PATH, JSON.stringify( { ...prev, ...updates }, null, 2 ) );
+    } catch ( _ ) {}
+}
+
+async function waitForClearHandoffZone ( T_llm, excludeKey = null, timeout = 60000 ) {
+    const deadline = Date.now() + timeout;
+    const watched = new Set( [
+        `${T_llm.x}_${T_llm.y}`,
+        `${T_llm.x + 1}_${T_llm.y}`, `${T_llm.x - 1}_${T_llm.y}`,
+        `${T_llm.x}_${T_llm.y + 1}`, `${T_llm.x}_${T_llm.y - 1}`,
+    ] );
+    while ( Date.now() < deadline ) {
+        const clear = Array.from( agents.values() ).every( a => {
+            const key = `${Math.round( a.x )}_${Math.round( a.y )}`;
+            if ( key === excludeKey ) return true; // ignore known partner position
+            return !watched.has( key );
+        } );
+        if ( clear ) return;
+        await new Promise( r => setTimeout( r, 1000 ) );
+    }
+    throw [ 'handoff: timeout waiting for clear zone around T_llm' ];
+}
+
+/**
+ * @implements { Plan }
+ */
+export class HandoffSlave extends PlanBase {
+    /** @type { function( string, ...any ) : boolean } */
+    static isApplicableTo ( action ) { return action === 'handoff_slave'; }
+
+    /** @type { function( string, ...any ) : Promise<boolean> } */
+    async execute ( action, T_slave_x, T_slave_y, T_llm_x, T_llm_y, dir_str ) {
+        if ( this.stopped ) throw [ 'stopped' ];
+        const T_llm    = { x: T_llm_x, y: T_llm_y };
+        const ANTI_DIR = oppositeDir( dir_str );
+        // T_retreat is where the LLM moves after dropping (one step in ANTI_DIR from T_llm)
+        const DIR_DELTA = { right:{dx:1,dy:0}, left:{dx:-1,dy:0}, up:{dx:0,dy:1}, down:{dx:0,dy:-1} }[ dir_str ];
+        const T_retreat_key = `${T_llm_x - DIR_DELTA.dx}_${T_llm_y - DIR_DELTA.dy}`;
+        // Navigate to T_slave
+        await this.subIntention( [ 'go_to', T_slave_x, T_slave_y ] );
+        if ( this.stopped ) throw [ 'stopped' ];
+
+        // Signal LLM: slave is in position
+        writeSlaveStatus( { handoffPhase: 'atPosition' } );
+        console.log( `[handoff-slave] At T_slave (${T_slave_x},${T_slave_y}). Waiting for HANDOFF_MOVE_IN...` );
+
+        // Wait for LLM to drop and vacate T_llm
+        await waitForHandoffMoveIn();
+        if ( this.stopped ) throw [ 'stopped' ];
+
+        // Step 3: move into T_llm (now vacated by LLM)
+        if ( !await socket.emitMove( ANTI_DIR ) ) throw [ 'handoff: slave failed to enter T_llm' ];
+
+        // Step 4: pick up LLM's parcels immediately
+        const picked = await socket.emitPickup();
+        console.log( `[handoff-slave] Picked up ${picked.length} parcels.` );
+
+        // Step 5: enemy check → drop everything (slave's own + LLM's)
+        // Exclude T_retreat — the LLM just moved there and is supposed to be there
+        await waitForClearHandoffZone( T_llm, T_retreat_key );
+        if ( this.stopped ) throw [ 'stopped' ];
+        await socket.emitPutdown();
+
+        // Step 6: vacate T_llm so LLM can step in
+        if ( !await socket.emitMove( dir_str ) ) throw [ 'handoff: slave failed to vacate T_llm' ];
+
+        // Block T_llm for 5 s so optionsGeneration doesn't propose go_pick_up for the parcels
+        // sitting there before the LLM (one step away at T_retreat) can collect them.
+        temporaryBlocks.set( `${T_llm_x}_${T_llm_y}`, Date.now() + 5000 );
+
+        // Signal LLM: T_llm is free; reset carriedCount so the monitor doesn't re-trigger immediately
+        writeSlaveStatus( { handoffPhase: 'vacated', carriedCount: 0 } );
+        console.log( '[handoff-slave] Vacated T_llm. Dance complete.' );
         return true;
     }
 }

@@ -1,8 +1,8 @@
 import { socket } from './socket.js';
-import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, failureCounters, CAPACITY, temporaryBlocks } from './beliefs.js';
+import { me, mapBeliefs, deliveryTiles, spawnTiles, spawnWeights, agents, parcels, gameConfig, failureCounters, CAPACITY, temporaryBlocks, crates, crateTargets, crateCooldowns, setIsCrateBlocking, IsCrateBlocking } from './beliefs.js';
 import { distance } from './utils.js';
 import { IntentionRevisionRevise } from './agent.js';
-import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary } from './plans.js';
+import { GoPickUp, GoDeliver, AStarMove, Explore, planLibrary, SolveCrate } from './plans.js';
 
 // ─── Belief Revision (Socket Listeners) ──────────────────────────────────────
 socket.onConfig( config => {
@@ -19,10 +19,9 @@ socket.onConfig( config => {
         if ( g.parcels     !== undefined ) Object.assign( gameConfig.GAME.parcels, g.parcels );
         if ( g.player      !== undefined ) Object.assign( gameConfig.GAME.player,  g.player  );
     }
-    // log the config without the map layout for readability
+    // Log config without map layout for readability
     const configWithoutMap = {...gameConfig};
     delete configWithoutMap.GAME.map;
-    
     console.log( '[config]', JSON.stringify( configWithoutMap, null, 2 ) );
 } );
 
@@ -35,12 +34,11 @@ socket.onYou( ( {id, name, x, y, score} ) => {
 
     const key = `${me.x}_${me.y}`;
     if (failureCounters.has(key)) failureCounters.set(key, 0);
-
 } );
-
 
 function updateTileBelief( x, y, type ) {
     const t = type.toString();
+    const key = `${x}_${y}`;
 
     const delIdx = deliveryTiles.findIndex( d => d.x == x && d.y == y );
     if ( t == '2' ) { if ( delIdx === -1 ) deliveryTiles.push( {x, y} ); }
@@ -49,6 +47,13 @@ function updateTileBelief( x, y, type ) {
     const spawnIdx = spawnTiles.findIndex( s => s.x == x && s.y == y );
     if ( t == '1' ) { if ( spawnIdx === -1 ) spawnTiles.push( {x, y} ); }
     else            { if ( spawnIdx !== -1 ) spawnTiles.splice( spawnIdx, 1 ); }
+
+    // crates logic
+    if ( t == '5!' || t == '5' ) {
+        crateTargets.set(key, {x, y});
+    } else {
+        crateTargets.delete(key);
+    }
 }
 
 // Gaussian KDE over spawn tiles. Bandwidth = observation_distance.
@@ -87,14 +92,17 @@ socket.onMap( (width, height, tile) => {
     recomputeSpawnWeights();
 });
 
-socket.onTile( ( tile ) => {
-    const {x, y, type} = tile;
-    mapBeliefs.set( `${x}_${y}`, tile );
-    updateTileBelief( x, y, type );
-    recomputeSpawnWeights();
-} );
-
 socket.onSensing( ( sensing ) => {
+    for (const c of sensing.crates) {
+        const key = `${c.x}_${c.y}`;
+        crates.set(key, {x: c.x, y: c.y});
+    }
+    for ( const [id] of crates ) {
+        if ( !sensing.crates.find( c => `${c.x}_${c.y}` == id ) ) {
+            crates.delete( id );
+        }
+    }
+
     for ( const p of sensing.parcels ) parcels.set( p.id, p );
     for ( const [id] of parcels ) {
         if ( !sensing.parcels.find( p => p.id == id ) ) parcels.delete( id );
@@ -113,13 +121,12 @@ export function optionsGeneration () {
         !p.carriedBy && p.reward > gameConfig.GAME.parcels.reward_variance
     );
 
-    // Propose delivery to the nearest tile if carrying anything
+    // Propose delivery to the nearest non-blocked tile
     if ( carried.length > 0 && deliveryTiles.length > 0 ) {
         const nearestDelivery = deliveryTiles
         .filter( t => {
             const key = `${t.x}_${t.y}`;
-            const isTempBlocked = temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now();
-            return !isTempBlocked; 
+            return !(temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now());
         })
         .reduce( (best, t) => {
             const d = distance( me, t );
@@ -134,12 +141,9 @@ export function optionsGeneration () {
     // or another visible agent is strictly closer to that parcel
     if ( carried.length < CAPACITY ) {
         for ( const p of available ) {
-
-            // Ignore parcels on frustrated tiles
             const key = `${Math.round(p.x)}_${Math.round(p.y)}`;
-            // if (frustrationBlocks.has(key) && frustrationBlocks.get(key) > Date.now()) continue;
             if (temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now()) continue;
-            
+
             const closerAgentExists = Array.from( agents.values() ).some(
                 a => distance( a, p ) < distance( me, p )
             );
@@ -149,18 +153,58 @@ export function optionsGeneration () {
         }
     }
 
-    // Always propose explore as fallback; getUtility ranks it last (utility = 0)
+    // Use PDDL to solve crate puzzles when a crate is detected as blocking
+    if(IsCrateBlocking) {
+        console.log("A crate is currently blocking the way. Attempting to solve nearby crates if possible.");
+
+        setIsCrateBlocking(false);
+
+        if (crates.size > 0 && crateTargets.size > 0) {
+            const now = Date.now();
+
+            // Filter out crates on cooldown
+            const validCrates = Array.from(crates.values()).filter(c => {
+                const key = `${c.x}_${c.y}`;
+                const isOnTarget = crateTargets.has(key);
+                return (!crateCooldowns.has(key) || crateCooldowns.get(key) < now) || !isOnTarget;
+            });
+
+            if (validCrates.length > 0) {
+                const nearestCrate = validCrates.reduce((best, c) => {
+                    const d = distance(me, c);
+                    return d < best.d ? { c, d } : best;
+                }, { c: null, d: Infinity }).c;
+
+                if (distance(me, nearestCrate) <= 5) {
+                    const nearestTarget = Array.from(crateTargets.values()).filter(t => {
+                        const key = `${t.x}_${t.y}`;
+                        return !crates.has(key); // Ensure target isn't occupied by another crate
+                    }).reduce((best, t) => {
+                        const d = distance(nearestCrate, t);
+                        return d < best.d ? { t, d } : best;
+                    }, { t: null, d: Infinity }).t;
+
+                    if (nearestTarget) {
+                        console.log(`Proposing to solve crate at (${nearestCrate.x}, ${nearestCrate.y}) with target at (${nearestTarget.x}, ${nearestTarget.y})`);
+                        myAgent.push( [ 'solve_crate', nearestCrate.x, nearestCrate.y, nearestTarget.x, nearestTarget.y ] );
+                    }
+                }
+            }
+        }
+    }
+
+    // Explore as lowest-priority fallback
     myAgent.push( [ 'explore' ] );
 }
 
 socket.onSensing( optionsGeneration );
 socket.onYou( optionsGeneration );
 
-// const myAgent = new IntentionRevisionReplace();
 const myAgent = new IntentionRevisionRevise();
 
 myAgent.loop();
 
+planLibrary.push( SolveCrate );
 planLibrary.push( GoPickUp );
 planLibrary.push( GoDeliver );
 planLibrary.push( AStarMove );

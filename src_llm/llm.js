@@ -1,10 +1,12 @@
 import "dotenv/config";
 import OpenAI from "openai";
-import { writeFileSync } from "fs";
+import { writeFileSync, readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { ADMIN_ID, ADMIN_NAME, dynamicRules, mapBeliefs } from "./beliefs.js";
+import { ADMIN_ID, ADMIN_NAME, dynamicRules, mapBeliefs, me, parcels, handoffState, mapWidthxHeight, THRESHOLD_FOR_HANDOFF, SLAVE_NAME, SLAVE_ID } from "./beliefs.js";
 import { socket } from "./socket.js";
+import { distance } from "./utils.js";
+import { astarDistance } from "./pathfinding.js";
 
 const __dir = dirname( fileURLToPath( import.meta.url ) );
 const SHARED_CONFIG_PATH = join( __dir, '..', 'shared-config.json' );
@@ -13,6 +15,38 @@ const SLAVE_STATUS_PATH = join( __dir, '..', 'slave-status.json' );
 
 let selfAgentRef = null;
 export function setSelfAgent ( agent ) { selfAgentRef = agent; }
+
+let handoffConfig = null;
+
+const INVALID_CORRIDOR_TYPES = new Set( [ '0', '2', '↑', '↓', '←', '→' ] );
+
+function findHandoffCorridor ( myPos, slavePos ) {
+    const DIRS = [
+        { dx: 1, dy: 0, name: 'right' }, { dx: -1, dy: 0, name: 'left' },
+        { dx: 0, dy: 1, name: 'up' },   { dx: 0, dy: -1, name: 'down' },
+    ];
+    const valid = t => t && !INVALID_CORRIDOR_TYPES.has( t.type );
+
+    let best = null, bestScore = Infinity;
+    for ( const [ , tile ] of mapBeliefs ) {
+        if ( !valid( tile ) ) continue;
+        for ( const dir of DIRS ) {
+            const T_slave   = { x: tile.x + dir.dx, y: tile.y + dir.dy };
+            const T_retreat = { x: tile.x - dir.dx, y: tile.y - dir.dy };
+            const st = mapBeliefs.get( `${T_slave.x}_${T_slave.y}` );
+            const rt = mapBeliefs.get( `${T_retreat.x}_${T_retreat.y}` );
+            if ( !valid( st ) || !valid( rt ) ) continue;
+            const score = distance( myPos, tile ) + distance( slavePos, T_slave );
+            if ( score < bestScore ) { bestScore = score; best = { T_llm: tile, T_slave, T_retreat, dir: dir.name }; }
+        }
+    }
+
+    if ( !best ) return null;
+    if ( astarDistance( myPos, best.T_llm ) === Infinity ) return null;
+    if ( astarDistance( slavePos, best.T_slave ) === Infinity ) return null;
+
+    return best;
+}
 
 function writeSharedConfig () {
     const snapshot = {
@@ -27,9 +61,7 @@ function writeSharedConfig () {
     console.log( '[shared-config] Written to disk.' );
 }
 
-// ==========================================
-// 1. LiteLLM Configuration
-// ==========================================
+// ─── LiteLLM Configuration ───────────────────────────────────────────────────
 
 const baseURL = process.env.LITELLM_BASE_URL || "https://llm.bears.disi.unitn.it/v1";
 const apiKey = process.env.LITELLM_API_KEY;
@@ -40,18 +72,14 @@ if (!apiKey) {
   process.exit(1);
 }
 
-// ==========================================
-// 2. OpenAI-compatible client
-// ==========================================
+// ─── OpenAI-compatible client ─────────────────────────────────────────────────
 
 const client = new OpenAI({
   baseURL,
   apiKey,
 });
 
-// ==========================================
-// 3. Tools
-// ==========================================
+// ─── Tools ───────────────────────────────────────────────────────────────────
 
 function set_forbidden_tile(input) {
     const [x, y] = input.split(',').map(s => Number(s.trim()));
@@ -85,13 +113,11 @@ function set_parcel_filter(input) {
 }
 
 function set_location_rule(input) {
-    // Expected variations: 
-    // "4, 8, 10, true" or "4, 8, -20, false"
-    // "leftmost, 5, true" or "top, -10, false"
+    // Input variations: "4, 8, 10, true" or "leftmost, 5, true"
     const parts = input.split(',');
     let target = parts[0].trim().toLowerCase();
-    
-    // 1. Handle Keyword Maps (leftmost, rightmost, top, bottom)
+
+    // 1. Edge keywords (leftmost, rightmost, top, bottom)
     if (['leftmost', 'rightmost', 'top', 'bottom'].includes(target)) {
         const pts = Number(parts[1].trim());
         const mustDrop = parts[2] ? parts[2].trim().toLowerCase() === 'true' : false;
@@ -102,7 +128,7 @@ function set_location_rule(input) {
         return `Edge rule recorded: ${target} edge assigned ${pts}pts. Must drop package: ${mustDrop}.`;
     }
 
-    // 2. Handle Coordinate Calculations (x, y)
+    // 2. Specific coordinates (x, y)
     else {
         const x = Number(parts[0].trim());
         const y = Number(parts[1].trim());
@@ -124,8 +150,8 @@ function set_location_rule(input) {
     }
 }
 
-function set_neighborhood_mission(input) {
-    // Input: "cx, cy, radius, pts" — e.g. "5, 5, 3, 500"
+async function set_neighborhood_mission(input) {
+    // Input: "cx, cy, radius, pts"
     const parts = input.split(',').map(s => Number(s.trim()));
     const [ cx, cy, radius, pts = 500 ] = parts;
 
@@ -133,7 +159,7 @@ function set_neighborhood_mission(input) {
         return `Error: invalid input. Expected "cx, cy, radius" or "cx, cy, radius, pts".`;
     }
 
-    // Collect walkable tiles within Manhattan distance radius from center
+    // Collect walkable tiles within Manhattan radius from center
     const tiles = [];
     for ( let dx = -radius; dx <= radius; dx++ ) {
         for ( let dy = -radius; dy <= radius; dy++ ) {
@@ -151,14 +177,121 @@ function set_neighborhood_mission(input) {
 
     const effectivePts = isNaN(pts) ? 500 : pts;
 
-    // Send command to slave agent via file
-    writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'GO_TO_NEIGHBORHOOD', tiles, pts: effectivePts }, null, 2 ) );
+    // Reset completion flag before sending so a stale true doesn't fire immediately
+    try {
+        const prev = existsSync( SLAVE_STATUS_PATH ) ? JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) ) : {};
+        writeFileSync( SLAVE_STATUS_PATH, JSON.stringify( { ...prev, neighborhoodDone: false }, null, 2 ) );
+    } catch ( _ ) {}
 
-    // Push to self (LLM) agent
-    if ( selfAgentRef ) selfAgentRef.push( [ 'go_to_neighborhood', tiles, effectivePts ] );
+    writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'GO_TO_NEIGHBORHOOD', tiles, pts: effectivePts }, null, 2 ) );
+    if ( selfAgentRef ) selfAgentRef.pushUrgent( [ 'go_to_neighborhood', tiles, effectivePts ] );
 
     console.log( `[neighborhood] Mission started: ${tiles.length} tiles around (${cx},${cy}), pts=${effectivePts}` );
-    return `Neighborhood mission started: ${tiles.length} walkable tiles around (${cx},${cy}) with radius ${radius}, pts=${effectivePts}.`;
+
+    // Block until both agents complete (writes neighborhoodDone: true after RESUME)
+    const deadline = Date.now() + 90000;
+    while ( Date.now() < deadline ) {
+        try {
+            if ( existsSync( SLAVE_STATUS_PATH ) ) {
+                const s = JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) );
+                if ( s.neighborhoodDone === true )
+                    return `Neighborhood mission complete: both agents reached area around (${cx},${cy}).`;
+            }
+        } catch ( _ ) {}
+        await new Promise( r => setTimeout( r, 200 ) );
+    }
+    return `Timeout: neighborhood mission around (${cx},${cy}) did not complete within 90s.`;
+}
+
+async function move_to_matching_tile(input) {
+    // Input: "condition" or "condition, pts" or "condition, pts, hold"
+    // Parse hold (true/false) from the last token first, then pts, then condition.
+    let remaining = input.trim();
+    let hold = false;
+    let pts = 500;
+
+    const lastComma1 = remaining.lastIndexOf(',');
+    if (lastComma1 !== -1) {
+        const lastToken = remaining.slice(lastComma1 + 1).trim().toLowerCase();
+        if (lastToken === 'true' || lastToken === 'false') {
+            hold = lastToken === 'true';
+            remaining = remaining.slice(0, lastComma1).trim();
+        }
+    }
+
+    const lastComma2 = remaining.lastIndexOf(',');
+    if (lastComma2 !== -1) {
+        const afterComma = remaining.slice(lastComma2 + 1).trim();
+        const parsedPts = Number(afterComma);
+        if (!isNaN(parsedPts)) {
+            pts = parsedPts;
+            remaining = remaining.slice(0, lastComma2).trim();
+        }
+    }
+    const condition = remaining;
+
+    // Validate condition before sending to either agent
+    let fn;
+    try { fn = new Function('x', 'y', `return !!(${condition})`); }
+    catch (e) { return `Error: invalid condition "${condition}": ${e.message}`; }
+
+    try {
+        const prev = existsSync( SLAVE_STATUS_PATH ) ? JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) ) : {};
+        writeFileSync( SLAVE_STATUS_PATH, JSON.stringify( { ...prev, conditionMet: false }, null, 2 ) );
+    } catch ( _ ) {}
+    writeFileSync(SLAVE_COMMAND_PATH, JSON.stringify({ cmd: 'GO_TO_MATCHING_TILE', condition, pts, hold }));
+    if (selfAgentRef) selfAgentRef.pushUrgent(['go_to_matching_tile', condition, pts, hold]);
+
+    // Block until both agents have arrived
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+        const selfMet = fn(Math.round(me.x), Math.round(me.y));
+        let slaveMet = false, slavePos = null;
+        try {
+            if (existsSync(SLAVE_STATUS_PATH)) {
+                const s = JSON.parse(readFileSync(SLAVE_STATUS_PATH, 'utf8'));
+                if (s.conditionMet === true && s.condition === condition) {
+                    slaveMet = true;
+                    slavePos = { x: s.x, y: s.y };
+                }
+            }
+        } catch (_) {}
+        if (selfMet && slaveMet) {
+            const holdNote = hold ? 'Agents are holding position.' : 'Agents have resumed normal operation.';
+            return `Both agents at "${condition}". Self (${Math.round(me.x)},${Math.round(me.y)}), slave (${slavePos.x},${slavePos.y}). ${holdNote}`;
+        }
+        await new Promise(r => setTimeout(r, 200));
+    }
+    return `Timeout: agents did not reach "${condition}" within 30s.`;
+}
+
+async function wait_both_at_condition(input) {
+    const condition = input.trim();
+    let fn;
+    try { fn = new Function('x', 'y', `return !!(${condition})`); }
+    catch (e) { return `Error: invalid condition "${condition}": ${e.message}`; }
+
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+        const selfMet = fn(Math.round(me.x), Math.round(me.y));
+
+        let slaveMet = false, slavePos = null;
+        try {
+            if (existsSync(SLAVE_STATUS_PATH)) {
+                const s = JSON.parse(readFileSync(SLAVE_STATUS_PATH, 'utf8'));
+                if (s.conditionMet === true && s.condition === condition) {
+                    slaveMet = true;
+                    slavePos = { x: s.x, y: s.y };
+                }
+            }
+        } catch (_) {}
+
+        if (selfMet && slaveMet)
+            return `Both agents satisfy "${condition}". Self (${Math.round(me.x)},${Math.round(me.y)}), slave (${slavePos.x},${slavePos.y}).`;
+
+        await new Promise(r => setTimeout(r, 200));
+    }
+    return `Timeout: not both agents satisfied "${condition}" within 30s.`;
 }
 
 function freeze_agents() {
@@ -170,20 +303,34 @@ function freeze_agents() {
 
 function unfreeze_agents() {
     writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'UNFREEZE' } ) );
-    if ( selfAgentRef ) selfAgentRef.unfreeze();
+    if ( selfAgentRef ) {
+        const q = selfAgentRef.intention_queue;
+        if ( q.length > 0 && [ 'go_to_matching_tile', 'go_to_neighborhood' ].includes( q[0].predicate[0] ) ) {
+            q[0].stop();
+        }
+        selfAgentRef.unfreeze();
+    }
     console.log( '[unfreeze] Both agents unfrozen.' );
     return 'Both agents are now unfrozen and will resume normal operation.';
 }
 
+function setup_handoff_pipeline ( input ) {
+    const parts = input.split( ',' ).map( s => Number( s.trim() ) );
+    const [ bonus_pts, threshold = THRESHOLD_FOR_HANDOFF ] = parts;
+    if ( isNaN( bonus_pts ) ) return 'Error: invalid bonus_pts.';
+    handoffConfig = { bonus_pts, threshold };
+    console.log( `[handoff] Pipeline configured: bonus=${bonus_pts}, threshold=${threshold}` );
+    return `Handoff pipeline active. Will trigger when combined carried parcels ≥ ${threshold}. Bonus: ${bonus_pts} pts per handoff parcel.`;
+}
+
 async function calculate(expression) {
   console.log("---- CALCULATE ----");
-
   try {
-    // Expose bare Math names (round, floor, sqrt, …) so the model can skip "Math."
+    // Expose bare Math names so the model can skip "Math."
     const preamble = 'const {abs,ceil,floor,round,sqrt,min,max,pow,log,PI}=Math;';
     const result = String(eval(preamble + expression));
-    await socket.emitAsk( currentSenderId, result );
-    writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'SAY', toId: currentSenderId, message: result } ) );
+    await socket.emitAsk( ADMIN_ID, result );
+    writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'SAY', toId: ADMIN_ID, message: result } ) );
     return result;
   } catch (error) {
     return `Error: ${error.message}`;
@@ -192,7 +339,6 @@ async function calculate(expression) {
 
 async function get_current_time(location) {
   console.log("---- GET CURRENT TIME ----");
-
   try {
     const normalized = location.trim().toLowerCase();
 
@@ -251,13 +397,15 @@ const TOOLS = {
     set_parcel_filter,
     set_location_rule,
     set_neighborhood_mission,
+    move_to_matching_tile,
+    wait_both_at_condition,
     freeze_agents,
     unfreeze_agents,
+    setup_handoff_pipeline,
     genericResponse
 };
-// ==========================================
-// 4. Reusable LLM call
-// ==========================================
+
+// ─── Reusable LLM call ────────────────────────────────────────────────────────
 
 async function callModel(messages, { temperature = 0 } = {}) {
   const response = await client.chat.completions.create({
@@ -269,9 +417,7 @@ async function callModel(messages, { temperature = 0 } = {}) {
   return response.choices?.[0]?.message?.content ?? "";
 }
 
-// ==========================================
-// 5. Output parsing
-// ==========================================
+// ─── Output parsing ───────────────────────────────────────────────────────────
 
 function extractAction(text) {
   const actionMatch = text.match(/^Action:\s*(.+)$/im);
@@ -292,11 +438,7 @@ function extractAction(text) {
 
 function extractStepResult(text) {
   const match = text.match(/^Step Result:\s*([\s\S]*)$/im);
-
-  if (!match) {
-    return null;
-  }
-
+  if (!match) return null;
   return match[1].trim();
 }
 
@@ -309,12 +451,9 @@ function hasBothActionAndStepResult(text) {
   const actionMatch = text.match(/^Action:\s*(.+)$/im);
   const stepResultMatch = text.match(/^Step Result:\s*[\s\S]*$/im);
 
-  if (!actionMatch || !stepResultMatch) {
-    return false;
-  }
+  if (!actionMatch || !stepResultMatch) return false;
 
   const action = actionMatch[1].trim().toLowerCase();
-
   return action !== "none";
 }
 
@@ -331,26 +470,31 @@ function safeJsonParse(text) {
   }
 }
 
-// ==========================================
-// 6. Prompts
-// ==========================================
+// ─── Prompts ──────────────────────────────────────────────────────────────────
 
 const PLANNER_PROMPT = `
-You are the strategic planning module of an AI agent connected to a game environment, called DeliverooJS .
+You are the strategic planning module of an AI agent connected to a game environment, called DeliverooJS.
 The agent moves and operates autonomously. Your job is NOT to move the agent, but to translate user messages about game rules, bonuses, and penalties into configuration steps.
+
+Coordinate system: X increases rightward, Y increases downward (screen coordinates).
+  leftmost  = X = minX  |  rightmost = X = maxX
+  topmost   = Y = minY  |  bottommost = Y = maxY
+The actual map bounds are provided in the state note below.
 
 Available tools:
 - calculate(expression): evaluates a mathematical expression
 - get_current_time(location): returns the current local time for Rome/Roma
-- set_forbidden_tile(coordinates): prevents the agent from entering a tile. Input format: "x, y" (e.g., "4, 7")
+- set_forbidden_tile(coordinates): prevents the agent from entering a tile. Input format: "x, y" (e.g., "4, 7"). Called for example if the user mentions a penalty (negative bonus) for moving to a tile.
 - set_delivery_multiplier(params): multiplies the reward for delivering at a tile. Usually the request contains keywords such as: "from now on" or "every time". Input format: "x, y, multiplier" (e.g., "4, 7, 5")
 - set_stack_size(params): requires the agent to carry exactly 'size' parcels to get a 'multiplier'. Input format: "size, multiplier" (e.g., "3, 2")
 - set_parcel_filter(maxReward): instructs the agent to wait to deliver and/or pick up parcels until their reward decays to maxReward or below. Input format: "maxReward" (e.g., "10")
-- set_location_rule(params): Configures point allocations or route bans based on spatial regions or tiles. Input format: "target, pts, mustDrop" where target is a coordinate pair 'x, y' or edge terms ('leftmost', 'rightmost', 'top', 'bottom'), pts is an integer value, and mustDrop is a boolean (true if the agent must drop a package, false if it just needs to visit. If not specified, it defaults to false). (e.g., "0, 0, 10, true" or "leftmost, -10, false").
+- set_location_rule(params): Configures point allocations or route bans based on spatial regions or tiles. The user can request the agent to reach a specific location (specific coordinate or border) and wether to drop a package on it. If the bonus on a specific tile is negative, call 'set_forbidden_tile' to blacklist it. Input format: "target, pts, mustDrop" where target is a coordinate pair 'x, y' or edge terms ('leftmost', 'rightmost', 'top', 'bottom'), pts is an integer value, and mustDrop is a boolean (true if the agent must drop a package, false if it just needs to visit. If not specified, it defaults to false). (e.g., "0, 0, 10, true" or "leftmost, -10, false").
 - set_neighborhood_mission(params): Sends BOTH agents to a neighborhood (area around a map position). Both agents independently navigate to the nearest free tile within the area and wait for each other before resuming. Input format: "cx, cy, radius, pts" where cx/cy is the center coordinate, radius is the Manhattan distance radius, and pts is the bonus points (default 500). (e.g., "5, 5, 3, 500").
-- genericResponse(): if the user request cannot be fulfilled with the available tools, call this to return a generic response to the user without making any configuration changes. Let the answer be very concise and straight to the point.
-- freeze_agents(): Immediately stops BOTH agents. They will not move or pick up parcels until unfrozen. No input required.
-- unfreeze_agents(): Resumes normal operation for BOTH agents after a freeze. No input required.
+- move_to_matching_tile(params): Sends BOTH agents to the nearest tile satisfying a JS condition, then blocks until both arrive (up to 30s). If the request is to reach a specific tile, use hold=false. If the user explicitly requests the agents to stop there, use hold=true (default). If the request is only to reach a tile for a bonus, don't use this tool, use: 'set_location_rule'. Input format: "condition, pts, hold" where condition is a JS boolean expression on x and y, pts is the bonus/penalty value (default 500, negative = command ignored), and hold is a boolean (default true). (e.g., "y % 2 == 1, 700, false" to visit without stopping, or "x == 5, 500, true" to hold there).
+- freeze_agents(): Immediately stops BOTH agents. They will not move or pick up parcels until unfrozen. No input required. Do not use if it gives negative points.
+- unfreeze_agents(): Resumes normal operation for BOTH agents after a freeze. No input required. Do not use if it gives negative points.
+- setup_handoff_pipeline(params): Sets up automatic cross-agent parcel handoff. Monitors both agents; when combined carried parcels reach the threshold, triggers a coordinated exchange so the LLM agent delivers all parcels and earns the cross-agent bonus. Input format: "bonus_pts, threshold" (e.g., "200, 3"). Default threshold=3.
+- genericResponse(): if the user request cannot be fulfilled with the available tools, call this to return a generic response to the user without making any configuration changes. Let the answer be very concise and straight to the point. Do not say "The requested tool is not available." in the response, but do use this tool whenever appropriate. If the user request is a question, do not say things like: "The answer is..." or "The capital of X is...", just give the answer.
 Rules:
 - Return ONLY valid JSON.
 - Do not use markdown.
@@ -359,6 +503,10 @@ Rules:
 - Each step must be concrete and executable.
 - If the user uses math to define coordinates (e.g., "x=4*2"), include a step that uses calculate first.
 - If the user mentions a penalty for moving to a tile, use set_forbidden_tile.
+- If the user mentions a bonus for cross-agent parcel delivery (one agent picks up, another delivers), call setup_handoff_pipeline.
+- move_to_matching_tile already blocks until both agents arrive. NEVER add any wait or hold step after it in the same plan. When hold=false (set false as default if not specified), agents resume immediately after arrival; when hold=true, they stay until unfrozen.
+- If the current agent state is frozen and the user requests any movement or action that requires the agents to move, ALWAYS begin the plan with unfreeze_agents() as step 1.
+- If the user sends only a generic movement word with no destination ("move", "go", "start", "resume", "continue") and does not specify any target, condition, or location, call ONLY unfreeze_agents() and nothing else. Do NOT invent a destination.
 - Do NOT try to move the agent or check its position.
 - If the user asks for a tool that is not available, do not call any tool and return a step that says "The requested tool is not available."
 
@@ -384,9 +532,12 @@ Available tools:
 - set_parcel_filter(maxReward) -> format: "maxReward"
 - set_location_rule(params) -> format: "target, pts, mustDrop" where target is a coordinate pair 'x, y' or edge terms ('leftmost', 'rightmost', 'top', 'bottom'), pts is an integer value, and mustDrop is a boolean (true to drop, false to visit).
 - set_neighborhood_mission(params) -> format: "cx, cy, radius, pts" — sends both agents to the area around (cx,cy) within Manhattan radius. Both wait for each other then resume.
-- genericResponse() -> no input, returns a generic fallback response to the user without making any configuration changes. Concise and straight to the point.
+- move_to_matching_tile(params) -> format: "condition, pts, hold" — sends both agents to nearest matching tile and blocks until both arrive. If not explicitly specified, set hold=false as default (e.g., "y % 2 == 1, 700, false"). pts negative = command ignored. hold=true (default) keeps agents at tile; hold=false releases them immediately after arrival.
+- wait_both_at_condition(condition) -> format: condition string — blocks until both agents already in motion have reached a matching tile. Times out after 30s.
 - freeze_agents() -> no input — immediately stops both agents. They will not move until unfrozen.
 - unfreeze_agents() -> no input — resumes both agents after a freeze.
+- setup_handoff_pipeline(params) -> format: "bonus_pts, threshold" — sets up automatic handoff monitoring. Triggers exchange when combined carried parcels ≥ threshold. (e.g., "200, 3")
+- genericResponse() -> no input, returns a generic fallback response to the user without making any configuration changes. Concise and straight to the point.
 
 You receive:
 - the original user request
@@ -430,18 +581,14 @@ Write a clear, concise final answer for the user.
 If any step failed or could not be verified, say so explicitly.
 `.trim();
 
-// ==========================================
-// 7. Conversation memory
-// ==========================================
+// ─── Conversation memory ──────────────────────────────────────────────────────
 
 const MAX_HISTORY = 20;
 
 // ID of the agent whose message is currently being processed.
-// Set at the start of each onMsg handler and used by tools that reply.
 let currentSenderId = ADMIN_ID;
 
-// Global memory stores only the visible conversation.
-// It does not store internal actions, observations, or plans.
+// Stores only the visible conversation (no internal actions, observations, or plans).
 const messages = [
   {
     role: "system",
@@ -449,22 +596,22 @@ const messages = [
   },
 ];
 
-// ==========================================
-// 8. Planner
-// ==========================================
+// ─── Planner ──────────────────────────────────────────────────────────────────
 
 async function createPlan(userInput) {
-  // Fix 3: append live agent state to the system prompt
   const frozenState = selfAgentRef?.frozen ? 'frozen (both agents are currently stopped)' : 'moving (both agents are currently active)';
-  const stateNote = `\n\nCurrent agent state: ${frozenState}`;
+  const { x: maxX, y: maxY, minX, minY } = mapWidthxHeight;
+  const boundsNote = maxX > 0
+      ? ` Map bounds: X(${minX}..${maxX}), Y(${minY}..${maxY}). Edges: leftmost x==${minX}, rightmost x==${maxX}, topmost y==${minY}, bottommost y==${maxY}.`
+      : ' Map not yet loaded.';
+  const stateNote = `\n\nCurrent agent state: ${frozenState}.${boundsNote}`;
 
-  // Fix 1: inject conversation history so the planner has context from prior turns
   const plannerMessages = [
     {
       role: "system",
       content: PLANNER_PROMPT + stateNote,
     },
-    ...messages.slice(1),   // history: alternating user/assistant turns (skip system placeholder)
+    ...messages.slice(1),   // inject conversation history (skip system placeholder)
     {
       role: "user",
       content: userInput,
@@ -485,7 +632,6 @@ async function createPlan(userInput) {
     parsedPlan.steps.length === 0
   ) {
     console.log("Warning: planner returned invalid JSON. Using fallback plan.\n");
-
     return {
       steps: [`Answer the user's request: ${userInput}`],
     };
@@ -494,9 +640,7 @@ async function createPlan(userInput) {
   return parsedPlan;
 }
 
-// ==========================================
-// 9. Step executor
-// ==========================================
+// ─── Step executor ────────────────────────────────────────────────────────────
 
 async function executeStep(step, context, maxStepIterations = 4) {
   const toolsCalled = [];
@@ -557,7 +701,6 @@ async function executeStep(step, context, maxStepIterations = 4) {
       );
     }
 
-    // Defensive rule:
     // If an Action is present, execute it before accepting any Step Result.
     const parsedAction = extractAction(assistantMessage);
 
@@ -618,9 +761,7 @@ async function executeStep(step, context, maxStepIterations = 4) {
   };
 }
 
-// ==========================================
-// 10. Final answer builder
-// ==========================================
+// ─── Final answer builder ─────────────────────────────────────────────────────
 
 async function buildFinalAnswer(userInput, plan, completedResults) {
   const finalMessages = [
@@ -644,12 +785,9 @@ async function buildFinalAnswer(userInput, plan, completedResults) {
   return await callModel(finalMessages, { temperature: 0.1 });
 }
 
-// ==========================================
-// 11. Agent turn
-// ==========================================
+// ─── Agent turn ───────────────────────────────────────────────────────────────
 
 async function runAgentTurn(userInput) {
-  // 1. Create a plan (Fix 1+3: inject history and live agent state)
   const plan = await createPlan(userInput);
 
   console.log("=== PLAN ===");
@@ -658,7 +796,6 @@ async function runAgentTurn(userInput) {
   });
   console.log();
 
-  // 2. Execute each planned step explicitly
   const completedResults = [];
   const allToolsCalled = [];
 
@@ -679,7 +816,6 @@ async function runAgentTurn(userInput) {
   });
   console.log();
 
-  // 3. Build final answer from all step results
   const finalAnswer = await buildFinalAnswer(userInput, plan, completedResults);
 
   console.log(`Assistant: ${finalAnswer}\n`);
@@ -690,9 +826,7 @@ async function runAgentTurn(userInput) {
     await socket.emitAsk( currentSenderId, finalAnswer );
     writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'SAY', toId: currentSenderId, message: finalAnswer } ) );
   }
-  
 
-  // 4. Store conversation with tool log prepended (Fix 2)
   messages.push({
     role: "user",
     content: userInput,
@@ -707,19 +841,16 @@ async function runAgentTurn(userInput) {
     content: toolPrefix + finalAnswer,
   });
 
-  // Sliding Window Memory Pruning
+  // Sliding window: prune oldest messages to prevent context overflow.
+  // Start at index 1 to protect the system prompt.
   if (messages.length > MAX_HISTORY + 1) {
     const excess = messages.length - (MAX_HISTORY + 1);
-    // splice(start_index, delete_count)
-    // We start at index 1 to protect the system prompt!
     messages.splice(1, excess);
     console.log(`[Memory] Auto-pruned the ${excess} oldest messages to prevent context overflow.`);
   }
 }
 
-// ==========================================
-// 12. DeliverooJS Chat Listener
-// ==========================================
+// ─── DeliverooJS Chat Listener ────────────────────────────────────────────────
 
 console.log("Planner + Executor Agent started.");
 console.log("Listening to DeliverooJS chat...");
@@ -727,18 +858,18 @@ console.log("Only accepting commands from player id: 'admin'.\n");
 
 // Reset all shared files so both agents start from a clean state
 writeSharedConfig();
-writeFileSync( SLAVE_STATUS_PATH,  JSON.stringify( { arrived: false }, null, 2 ) );
+writeFileSync( SLAVE_STATUS_PATH,  JSON.stringify( { arrived: false, conditionMet: false, handoffPhase: null }, null, 2 ) );
 writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( {} ) );
 
-socket.onMsg(async (id, name, msg) => {
-  // Security check: Ignore all messages unless the ID is exactly 'admin'
+// Serialize runAgentTurn calls — second message queued while a plan executes is processed after
+let commandQueue = Promise.resolve();
 
+socket.onMsg(async (id, name, msg) => {
+  // Security check: ignore all messages unless the ID matches the admin
   // if (id != ADMIN_ID && name.toLowerCase() != ADMIN_NAME) {
   //   console.log(`[Blocked] Ignored message from ${name} (${id}): ${msg}`);
-  //   return;
-  // }
-
-  currentSenderId = id;
+  //     return;
+  //   }
 
   console.log(`=== COMMAND FROM ${name} (${id}) ===`);
   console.log(`Message: ${msg}\n`);
@@ -761,7 +892,43 @@ socket.onMsg(async (id, name, msg) => {
     return;
   }
 
-  await runAgentTurn(msg);
+  // Snapshot sender ID and message — captured per-command because the queue runs asynchronously
+  const senderId = id;
+  const msgSnapshot = msg;
 
-  console.log(`Visible memory contains ${messages.length} messages.\n`);
+  commandQueue = commandQueue.then( async () => {
+    currentSenderId = senderId;
+    await runAgentTurn( msgSnapshot );
+    console.log(`Visible memory contains ${messages.length} messages.\n`);
+  } ).catch( () => {} );
 });
+
+// ─── Handoff pipeline monitor ─────────────────────────────────────────────────
+const HANDOFF_COOLDOWN_MS = 10000;
+
+socket.onSensing( () => {
+    if ( !handoffConfig || handoffState.inProgress || !selfAgentRef ) return;
+    if ( Date.now() - handoffState.lastCompletedAt < HANDOFF_COOLDOWN_MS ) return;
+    // Do not trigger handoff during a coordination hold — it would interrupt the hold plan
+    // and cause the coordination tool's poll loop to time out.
+    const q = selfAgentRef.intention_queue;
+    if ( q.length > 0 && [ 'go_to_matching_tile', 'go_to_neighborhood' ].includes( q[0].predicate[0] ) ) return;
+    const myCount = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id ).length;
+    try {
+        if ( !existsSync( SLAVE_STATUS_PATH ) ) return;
+        const status = JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) );
+        const slaveCount = status.carriedCount ?? 0;
+        if ( myCount + slaveCount < handoffConfig.threshold ) return;
+        if ( status.x == null || status.y == null ) return;
+        const corridor = findHandoffCorridor( me, { x: status.x, y: status.y } );
+        if ( !corridor ) { console.log( '[handoff] No 3-tile corridor found.' ); return; }
+        handoffState.inProgress = true;
+        console.log( `[handoff] Triggering. Corridor: T_llm(${corridor.T_llm.x},${corridor.T_llm.y}) T_slave(${corridor.T_slave.x},${corridor.T_slave.y}) dir=${corridor.dir}` );
+        selfAgentRef.pushUrgent( [
+            'handoff_llm',
+            corridor.T_llm.x, corridor.T_llm.y,
+            corridor.T_slave.x, corridor.T_slave.y,
+            corridor.dir,
+        ] );
+    } catch ( e ) { handoffState.inProgress = false; console.error( '[handoff] Monitor error:', e.message ); }
+} );

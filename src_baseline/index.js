@@ -70,7 +70,6 @@ function optionsGeneration () {
         })[ 0 ];
 
         if ( bestPickUp && distance(me, bestPickUp) <= 10 && carried.length < 9 ) {
-        // if ( bestPickUp && distance(me, bestPickUp) <= 10 ) {
             myAgent.push( [ 'go_pick_up', bestPickUp.x, bestPickUp.y, bestPickUp.id ] );
             return;
         }

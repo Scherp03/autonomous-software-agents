@@ -9,10 +9,9 @@ const DIRS = [
 
 export function canEnter( nx, ny, blockedBy ) {
     const key = `${nx}_${ny}`;
-    
-    // Check if this tile was recently blocked by a failed move
+
     if ( temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now() ) {
-        return false; 
+        return false;
     }
 
     const tile = mapBeliefs.get( key );
@@ -21,6 +20,7 @@ export function canEnter( nx, ny, blockedBy ) {
     return true;
 }
 
+// Returns the shortest path as an array of direction strings, or null if unreachable.
 export function bfs( from, to ) {
     const startX = Math.round(from.x);
     const startY = Math.round(from.y);
@@ -39,7 +39,7 @@ export function bfs( from, to ) {
             const nx = x + dx;
             const ny = y + dy;
             const key = `${nx}_${ny}`;
-            
+
             if ( visited.has(key) ) continue;
             if ( !canEnter(nx, ny, blockedBy) ) continue;
 
@@ -51,5 +51,5 @@ export function bfs( from, to ) {
         }
     }
 
-    return null; 
+    return null;
 }

@@ -1,7 +1,4 @@
-/**
- * Manhattan distance between two points
- * @type { function ({x:number,y:number},{x:number,y:number}):number }
- */
+/** Manhattan distance between two points. */
 export function distance( {x:x1, y:y1}, {x:x2, y:y2} ) {
     const dx = Math.abs( Math.round(x1) - Math.round(x2) );
     const dy = Math.abs( Math.round(y1) - Math.round(y2) );
@@ -9,7 +6,7 @@ export function distance( {x:x1, y:y1}, {x:x2, y:y2} ) {
 }
 
 /**
- * Parse a server interval string ('1s', '500ms') into milliseconds.
+ * Parses server interval string ('1s', '500ms') to milliseconds.
  * @param { string } str
  * @returns { number }
  */
