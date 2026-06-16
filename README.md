@@ -26,8 +26,20 @@ npm install
 
 ```bash
 npm run bdi        # final BDI agent
+```
+
+```bash
 npm run baseline   # baseline simple BDI agent (single instance)
+```
+
+```bash
 npm run baselines  # one baseline instance per TOKEN_N in .env
+```
+
+```bash
 npm run llm        # BDI + LLM (requires LITELLM_* vars)
+```
+
+```bash
 npm run slave      # slave agent, run alongside llm
 ```
