@@ -10,20 +10,15 @@ const DIRS = [
 export function canEnter( nx, ny, blockedBy ) {
     const key = `${nx}_${ny}`;
 
-    // Check dynamic forbidden tiles first
-    if ( dynamicRules.forbiddenTiles.has(key) ) {
-        return false;
-    }
+    if ( dynamicRules.forbiddenTiles.has(key) ) return false;
 
-    // Block tiles that lie on a penalised edge (negative pts means "avoid this edge")
+    // Block tiles on a penalised edge (negative pts = avoid that edge)
     if ( dynamicRules.edgeRules.get('left')?.pts   < 0 && nx === 0 ) return false;
     if ( dynamicRules.edgeRules.get('bottom')?.pts < 0 && ny === 0 ) return false;
     if ( dynamicRules.edgeRules.get('right')?.pts  < 0 && nx === mapWidthxHeight.x - 1 ) return false;
     if ( dynamicRules.edgeRules.get('top')?.pts    < 0 && ny === mapWidthxHeight.y - 1 ) return false;
 
-    if ( temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now() ) {
-        return false;
-    }
+    if ( temporaryBlocks.has(key) && temporaryBlocks.get(key) > Date.now() ) return false;
 
     const tile = mapBeliefs.get( key );
     if ( !tile || tile.type == '0' ) return false;

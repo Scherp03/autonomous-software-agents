@@ -1,59 +1,30 @@
 export const me = { id: '', name: '', x: -1, y: -1, score: 0 };
 
-/**
- * @type { Map<string, {x:number, y:number, type:string|number}> }
- */
+/** @type { Map<string, {x:number, y:number, type:string|number}> } */
 export const mapBeliefs = new Map();
 
 /** @type {{x:number, y:number, minX:number, minY:number}} */
 export const mapWidthxHeight = { x: 0, y: 0, minX: 0, minY: 0 };
+
 /** @type { {x:number, y:number}[] } */
 export const deliveryTiles = [];
 
 /** @type { {x:number, y:number}[] } */
 export const spawnTiles = [];
 
-/**
- * @type { Map<string, {id:string, x:number, y:number, reward:number, carriedBy?:string}> }
- */
+/** @type { Map<string, {id:string, x:number, y:number, reward:number, carriedBy?:string}> } */
 export const parcels = new Map();
 
-/**
- * Other visible agents, keyed by id. Updated on every sensing event.
- * @type { Map<string, {id:string, name:string, x:number, y:number, score:number}> }
- */
+/** @type { Map<string, {id:string, name:string, x:number, y:number, score:number}> } */
 export const agents = new Map();
 
 export const temporaryBlocks = new Map();
-
 export const failureCounters = new Map();
 
-/**
- * Parzen window weight for each spawn tile, keyed by 'x_y'.
- * Recomputed whenever the map is updated. Used by Explore for weighted sampling.
- * @type { Map<string, number> }
- */
+/** @type { Map<string, number> } */
 export const spawnWeights = new Map();
 
-/**
- * Game configuration received from the server via onConfig.
- * Defaults match the server's own defaults so the agent behaves correctly
- * before the first config event arrives.
- * @type {{
- *   CLOCK: number,
- *   PENALTY: number,
- *   AGENT_TIMEOUT: number,
- *   BROADCAST_LOGS: boolean,
- *   GAME: {
- *     title: string,
- *     description: string,
- *     maxPlayers: number,
- *     map: { width: number, height: number },
- *     parcels: { generation_event: string, decaying_event: string, max: number, reward_avg: number, reward_variance: number },
- *     player: { movement_duration: number, observation_distance: number, capacity: number }
- *   }
- * }}
- */
+// Game config received from server; defaults match server defaults.
 export const gameConfig = {
     CLOCK: 50,
     PENALTY: 1,
@@ -80,24 +51,21 @@ export const gameConfig = {
 };
 
 export const dynamicRules = {
-    forbiddenTiles: new Set(),         // Store as "x_y" strings
-    deliveryMultipliers: new Map(),    // Map "x_y" -> multiplier
+    forbiddenTiles: new Set(),         // "x_y" strings
+    deliveryMultipliers: new Map(),    // "x_y" -> multiplier
     stackSizeRule: null,               // { size: number, multiplier: number }
-    parcelMaxReward: Infinity,         // Max score threshold
-    bonusTiles: new Map(),             // Map "x_y" -> { pts: number, mustDrop: boolean }
-    edgeRules: new Map()               // Map "left"|"right"|"top"|"bottom" -> { pts: number, mustDrop: boolean }
+    parcelMaxReward: Infinity,
+    bonusTiles: new Map(),             // "x_y" -> { pts: number, mustDrop: boolean }
+    edgeRules: new Map()               // "left"|"right"|"top"|"bottom" -> { pts: number, mustDrop: boolean }
 };
 
 export const CAPACITY = 10;
 
-export const THRESHOLD_FOR_HANDOFF = 2; // Number of parcels to trigger handoff
+export const THRESHOLD_FOR_HANDOFF = 2;
 
 export const handoffState = { inProgress: false, lastCompletedAt: 0 };
 
-// export const ADMIN_ID = '715c7f';
 export const ADMIN_ID = '00a552';
 export const ADMIN_NAME = 'admin';
 export const SLAVE_NAME = 'JOk3R_slave';
 export const SLAVE_ID = 'f7b43d';
-// export const ADMIN_ID = "4c3c93"
-// export const ADMIN_NAME = "J0K3R"

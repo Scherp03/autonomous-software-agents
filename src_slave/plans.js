@@ -150,6 +150,9 @@ export class GoPickUp extends PlanBase {
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class GoDeliver extends PlanBase {
     /**
      * @type { function( string, ...any ) : boolean } 
@@ -165,14 +168,17 @@ export class GoDeliver extends PlanBase {
         
         if ( this.stopped ) throw [ 'stopped' ];
         await socket.emitPutdown();
-        // After delivery, remove the delivered parcels from beliefs to prevent re-planning on them. 
-        for ( const [ id, p ] of parcels ) {                  
+        // Remove delivered parcels from beliefs to prevent re-planning on them.
+        for ( const [ id, p ] of parcels ) {
             if ( p.carriedBy === me.id ) parcels.delete( id );
         }
         return true;
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class AStarMove extends PlanBase {
     /**
      * @type { function( string, ...any ) : boolean } 
@@ -194,30 +200,21 @@ export class AStarMove extends PlanBase {
             const path = astar( { x: me.x, y: me.y }, { x: targetX, y: targetY } );
             
             if ( !path || path.length == 0 ) {
-                // await new Promise(res => setTimeout(res, 100)); 
-                throw [ 'no path to', targetX, targetY ]; 
+                throw [ 'no path to', targetX, targetY ];
             }
 
             const move = path[ 0 ];
             const result = await socket.emitMove( move );
 
             if ( !result ) {
-                // this.log( `Move ${move} failed. Blacklisting tile temporarily.` );
-
-                // Increment failure counter for this target
                 let currentFailures = failureCounters.get(targetKey) || 0;
                 failureCounters.set(targetKey, currentFailures + 1);
 
-                // console.log(failureCounters.get(targetKey))
-
-                // If stuck for 5 tries, abandon the goal for 15 seconds!
+                // After 5 failed moves, block target for 15s
                 if ( failureCounters.get(targetKey) >= 5 ) {
                     console.log(`[Stuck] Bumped 5 times. Abandoning target ${targetX},${targetY} for 15s.`);
-                    // frustrationBlocks.set(targetKey, Date.now() + 15000);
-
                     temporaryBlocks.set(targetKey, Date.now() + 15000);
-
-                    failureCounters.set(targetKey, 0); // reset counter after applying frustration block
+                    failureCounters.set(targetKey, 0);
                     throw [ 'stuck', targetX, targetY ];
                 }
 
@@ -229,13 +226,10 @@ export class AStarMove extends PlanBase {
                 if (move == 'down')  blockY -= 1;
 
                 temporaryBlocks.set(`${blockX}_${blockY}`, Date.now() + 1000);
-
-                // await new Promise(res => setTimeout(res, 100));
                 continue;
             }
 
-            // Opportunistic pickup: grab any unclaimed parcel on the new tile without
-            // interrupting the current plan. Uses the confirmed position from the move result.
+            // Opportunistic pickup: grab unclaimed parcel on the new tile without interrupting the plan.
             const { x: newX, y: newY } = result;
             const carried = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id );
             if ( carried.length < CAPACITY ) {
@@ -247,19 +241,20 @@ export class AStarMove extends PlanBase {
                 );
                 if ( parcelOnTile ) await socket.emitPickup();
             }
-
-            // await new Promise(res => setTimeout(res, 100));
         }
 
         return true;
     }
 }
 
-
-
+/**
+ * @implements { Plan }
+ */
 export class GoToBonus extends PlanBase {
+    /** @type { function( string, ...any ) : boolean } */
     static isApplicableTo ( action ) { return action === 'go_to_bonus'; }
 
+    /** @type { function( string, ...any ) : Promise<boolean> } */
     async execute ( action, x, y, id ) {
         if ( this.stopped ) throw [ 'stopped' ];
         await this.subIntention( [ 'go_to', x, y ] );
@@ -271,9 +266,14 @@ export class GoToBonus extends PlanBase {
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class DropOnTile extends PlanBase {
+    /** @type { function( string, ...any ) : boolean } */
     static isApplicableTo ( action ) { return action === 'drop_on_tile'; }
 
+    /** @type { function( string, ...any ) : Promise<boolean> } */
     async execute ( action, x, y, id ) {
         if ( this.stopped ) throw [ 'stopped' ];
         await this.subIntention( [ 'go_to', x, y ] );
@@ -289,9 +289,14 @@ export class DropOnTile extends PlanBase {
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class GoToMatchingTile extends PlanBase {
+    /** @type { function( string, ...any ) : boolean } */
     static isApplicableTo ( action ) { return action === 'go_to_matching_tile'; }
 
+    /** @type { function( string, ...any ) : Promise<boolean> } */
     async execute ( action, condition, pts, hold = false ) {
         if ( this.stopped ) throw [ 'stopped' ];
 
@@ -325,9 +330,14 @@ export class GoToMatchingTile extends PlanBase {
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class GoToNeighborhood extends PlanBase {
+    /** @type { function( string, ...any ) : boolean } */
     static isApplicableTo ( action ) { return action === 'go_to_neighborhood'; }
 
+    /** @type { function( string, ...any ) : Promise<boolean> } */
     async execute ( action, tiles, pts ) {
         if ( this.stopped ) throw [ 'stopped' ];
 
@@ -367,9 +377,14 @@ export class GoToNeighborhood extends PlanBase {
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class GoToEdge extends PlanBase {
+    /** @type { function( string, ...any ) : boolean } */
     static isApplicableTo ( action ) { return action === 'go_to_edge'; }
 
+    /** @type { function( string, ...any ) : Promise<boolean> } */
     async execute ( action, pts ) {
         if ( this.stopped ) throw [ 'stopped' ];
 
@@ -436,9 +451,14 @@ async function waitForClearHandoffZone ( T_llm, excludeKey = null, timeout = 600
     throw [ 'handoff: timeout waiting for clear zone around T_llm' ];
 }
 
+/**
+ * @implements { Plan }
+ */
 export class HandoffSlave extends PlanBase {
+    /** @type { function( string, ...any ) : boolean } */
     static isApplicableTo ( action ) { return action === 'handoff_slave'; }
 
+    /** @type { function( string, ...any ) : Promise<boolean> } */
     async execute ( action, T_slave_x, T_slave_y, T_llm_x, T_llm_y, dir_str ) {
         if ( this.stopped ) throw [ 'stopped' ];
         const T_llm    = { x: T_llm_x, y: T_llm_y };

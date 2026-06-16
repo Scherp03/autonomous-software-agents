@@ -29,10 +29,7 @@ const SLAVE_COMMAND_PATH = join( __dir, '..', 'slave-command.json' );
  * } } PlanClass
  */
 
-/**
- * Plan library
- * @type { PlanClass [] }
- */
+/** @type { PlanClass [] } */
 export const planLibrary = [];
 
 /**
@@ -46,12 +43,8 @@ class PlanBase {
     }
     get stopped () { return this.#stopped; }
 
-    // refers to the caller of the plan, for example an IntentionDeliberation
     #parent;
-
-    /**
-     * @param { PlanBase } parent
-     */
+    /** @param { PlanBase } parent */
     constructor ( parent ) { this.#parent = parent; }
 
     /** @type { function(...any): void } */
@@ -64,7 +57,7 @@ class PlanBase {
     #sub_intentions = [];
 
     /**
-     * @param { [string, ...any] } predicate 
+     * @param { [string, ...any] } predicate
      * @returns { Promise<boolean> }
      */
     async subIntention ( predicate ) {
@@ -78,18 +71,13 @@ class PlanBase {
  * @implements { Plan }
  */
 export class Explore extends PlanBase {
-    
-    /**
-     * @type { function( string, ...any ) : boolean } 
-     */
+    /** @type { function( string, ...any ) : boolean } */
     static isApplicableTo ( explore ) { return explore == 'explore'; }
 
-    /**
-     * @type { function( string, ...any ) : Promise<boolean> } 
-     */
+    /** @type { function( string, ...any ) : Promise<boolean> } */
     async execute () {
         if ( this.stopped ) throw [ 'stopped' ];
-        
+
         let target;
 
         if ( spawnTiles.length > 0 ) {
@@ -120,15 +108,14 @@ export class Explore extends PlanBase {
                 await this.subIntention( [ 'go_to', target.x, target.y ] );
                 return true;
             } catch (error) {
-                // this.log( 'explore failed to go_to target', target, 'error:', error );
+                this.log( 'explore failed to go_to target', target, 'error:', error );
             }
         }
-    
+
         const dirs = ['up', 'down', 'left', 'right'];
         const randomDir = dirs[Math.floor(Math.random() * dirs.length)];
         await socket.emitMove(randomDir);
-        // await new Promise(res => setTimeout(res, 100)); 
-        
+
         return true;
     }
 }
@@ -138,54 +125,60 @@ export class Explore extends PlanBase {
  */
 export class GoPickUp extends PlanBase {
     /**
-     * @type { function( string, ...any ) : boolean } 
+     * @type { function( string, ...any ) : boolean }
      */
     static isApplicableTo ( go_pick_up, x, y, id ) { return go_pick_up == 'go_pick_up'; }
 
     /**
-     * @type { function( string, ...any ) : Promise<boolean> } 
+     * @type { function( string, ...any ) : Promise<boolean> }
      */
     async execute ( go_pick_up, x, y, id ) {
         if ( this.stopped ) throw [ 'stopped' ];
         await this.subIntention( [ 'go_to', x, y ] );
-        
+
         if ( this.stopped ) throw [ 'stopped' ];
         await socket.emitPickup();
         return true;
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class GoDeliver extends PlanBase {
     /**
-     * @type { function( string, ...any ) : boolean } 
+     * @type { function( string, ...any ) : boolean }
      */
     static isApplicableTo ( go_deliver ) { return go_deliver == 'go_deliver'; }
 
     /**
-     * @type { function( string, ...any ) : Promise<boolean> } 
+     * @type { function( string, ...any ) : Promise<boolean> }
      */
     async execute ( go_deliver, x, y ) {
         if ( this.stopped ) throw [ 'stopped' ];
         await this.subIntention( [ 'go_to', x, y ] );
-        
+
         if ( this.stopped ) throw [ 'stopped' ];
         await socket.emitPutdown();
-        // After delivery, remove the delivered parcels from beliefs to prevent re-planning on them. 
-        for ( const [ id, p ] of parcels ) {                  
+        // Remove delivered parcels from beliefs to prevent re-planning on them.
+        for ( const [ id, p ] of parcels ) {
             if ( p.carriedBy === me.id ) parcels.delete( id );
         }
         return true;
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class AStarMove extends PlanBase {
     /**
-     * @type { function( string, ...any ) : boolean } 
+     * @type { function( string, ...any ) : boolean }
      */
     static isApplicableTo ( go_to ) { return go_to == 'go_to'; }
 
     /**
-     * @type { function( string, ...any ) : Promise<boolean> } 
+     * @type { function( string, ...any ) : Promise<boolean> }
      */
     async execute ( go_to, targetX, targetY ) {
         targetX = Math.round(targetX);
@@ -196,32 +189,23 @@ export class AStarMove extends PlanBase {
             if ( this.stopped ) throw [ 'stopped' ];
 
             const path = astar( { x: me.x, y: me.y }, { x: targetX, y: targetY } );
-            
+
             if ( !path || path.length == 0 ) {
-                // await new Promise(res => setTimeout(res, 100)); 
-                throw [ 'no path to', targetX, targetY ]; 
+                throw [ 'no path to', targetX, targetY ];
             }
 
             const move = path[ 0 ];
             const result = await socket.emitMove( move );
 
             if ( !result ) {
-                // this.log( `Move ${move} failed. Blacklisting tile temporarily.` );
-
-                // Increment failure counter for this target
                 let currentFailures = failureCounters.get(targetKey) || 0;
                 failureCounters.set(targetKey, currentFailures + 1);
 
-                // console.log(failureCounters.get(targetKey))
-
-                // If stuck for 5 tries, abandon the goal for 15 seconds!
+                // After 5 failed moves, block target for 15s
                 if ( failureCounters.get(targetKey) >= 5 ) {
                     console.log(`[Stuck] Bumped 5 times. Abandoning target ${targetX},${targetY} for 15s.`);
-                    // frustrationBlocks.set(targetKey, Date.now() + 15000);
-
                     temporaryBlocks.set(targetKey, Date.now() + 15000);
-
-                    failureCounters.set(targetKey, 0); // reset counter after applying frustration block
+                    failureCounters.set(targetKey, 0);
                     throw [ 'stuck', targetX, targetY ];
                 }
 
@@ -233,13 +217,10 @@ export class AStarMove extends PlanBase {
                 if (move == 'down')  blockY -= 1;
 
                 temporaryBlocks.set(`${blockX}_${blockY}`, Date.now() + 1000);
-
-                // await new Promise(res => setTimeout(res, 100));
                 continue;
             }
 
-            // Opportunistic pickup: grab any unclaimed parcel on the new tile without
-            // interrupting the current plan. Uses the confirmed position from the move result.
+            // Opportunistic pickup: grab unclaimed parcel on the new tile without interrupting the plan.
             const { x: newX, y: newY } = result;
             const carried = Array.from( parcels.values() ).filter( p => p.carriedBy === me.id );
             if ( carried.length < CAPACITY ) {
@@ -249,26 +230,26 @@ export class AStarMove extends PlanBase {
                          Math.round( p.y ) === Math.round( newY ) &&
                          p.reward < dynamicRules.parcelMaxReward
                 );
-                if ( parcelOnTile ){
-                    await socket.emitPickup();
-                } 
+                if ( parcelOnTile ) await socket.emitPickup();
             }
-
-            // await new Promise(res => setTimeout(res, 100));
         }
 
         return true;
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class GoToBonus extends PlanBase {
+    /** @type { function( string, ...any ) : boolean } */
     static isApplicableTo ( action ) { return action === 'go_to_bonus'; }
 
+    /** @type { function( string, ...any ) : Promise<boolean> } */
     async execute ( action, x, y, id ) {
         if ( this.stopped ) throw [ 'stopped' ];
         await this.subIntention( [ 'go_to', x, y ] );
-        
-        // Clear the rule based on whether it was an edge or a specific tile
+
         if (id && ['left', 'right', 'top', 'bottom'].includes(id)) {
             dynamicRules.edgeRules.delete(id);
         } else {
@@ -278,9 +259,14 @@ export class GoToBonus extends PlanBase {
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class DropOnTile extends PlanBase {
+    /** @type { function( string, ...any ) : boolean } */
     static isApplicableTo ( action ) { return action === 'drop_on_tile'; }
 
+    /** @type { function( string, ...any ) : Promise<boolean> } */
     async execute ( action, x, y, id ) {
         if ( this.stopped ) throw [ 'stopped' ];
         await this.subIntention( [ 'go_to', x, y ] );
@@ -300,9 +286,14 @@ export class DropOnTile extends PlanBase {
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class GoToMatchingTile extends PlanBase {
+    /** @type { function( string, ...any ) : boolean } */
     static isApplicableTo ( action ) { return action === 'go_to_matching_tile'; }
 
+    /** @type { function( string, ...any ) : Promise<boolean> } */
     async execute ( action, condition, pts, hold = false ) {
         if ( this.stopped ) throw [ 'stopped' ];
 
@@ -321,7 +312,7 @@ export class GoToMatchingTile extends PlanBase {
             if ( this.stopped ) throw [ 'stopped' ];
             try {
                 await this.subIntention( [ 'go_to', target.x, target.y ] );
-                // Wait for slave to also arrive (prevents moving away before sync)
+                // Wait for slave to arrive before proceeding
                 const slaveDeadline = Date.now() + 60000;
                 while ( Date.now() < slaveDeadline ) {
                     if ( this.stopped ) throw [ 'stopped' ];
@@ -347,9 +338,14 @@ export class GoToMatchingTile extends PlanBase {
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class GoToEdge extends PlanBase {
+    /** @type { function( string, ...any ) : boolean } */
     static isApplicableTo ( action ) { return action === 'go_to_edge'; }
 
+    /** @type { function( string, ...any ) : Promise<boolean> } */
     async execute ( action, pts ) {
         if ( this.stopped ) throw [ 'stopped' ];
 
@@ -370,7 +366,7 @@ export class GoToEdge extends PlanBase {
             if ( this.stopped ) throw [ 'stopped' ];
             try {
                 await this.subIntention( [ 'go_to', target.x, target.y ] );
-                // Wait for slave to also arrive at the border
+                // Wait for slave to reach the border
                 const slaveDeadline = Date.now() + 60000;
                 while ( Date.now() < slaveDeadline ) {
                     if ( this.stopped ) throw [ 'stopped' ];
@@ -434,9 +430,14 @@ async function waitForClearHandoffZone ( T_llm, excludeKey = null, timeout = 600
     throw [ 'handoff: timeout waiting for clear zone around T_llm' ];
 }
 
+/**
+ * @implements { Plan }
+ */
 export class HandoffLLM extends PlanBase {
+    /** @type { function( string, ...any ) : boolean } */
     static isApplicableTo ( action ) { return action === 'handoff_llm'; }
 
+    /** @type { function( string, ...any ) : Promise<boolean> } */
     async execute ( action, T_llm_x, T_llm_y, T_slave_x, T_slave_y, dir_str ) {
         if ( this.stopped ) throw [ 'stopped' ];
         const T_llm    = { x: T_llm_x, y: T_llm_y };
@@ -456,12 +457,12 @@ export class HandoffLLM extends PlanBase {
             await pollSlaveHandoffPhase( 'atPosition' );
             if ( this.stopped ) throw [ 'stopped' ];
 
-            // Step 1: enemy check → LLM drops at T_llm (exclude slave's tile — it's supposed to be there)
+            // Enemy check, then LLM drops at T_llm (slave tile excluded — it's supposed to be there)
             await waitForClearHandoffZone( T_llm, `${T_slave_x}_${T_slave_y}` );
             if ( this.stopped ) throw [ 'stopped' ];
             await socket.emitPutdown();
 
-            // Step 2: LLM vacates T_llm
+            // LLM vacates T_llm
             if ( !await socket.emitMove( ANTI_DIR ) ) throw [ 'handoff: LLM failed to vacate T_llm' ];
 
             // Signal slave to start its side of the dance
@@ -471,14 +472,12 @@ export class HandoffLLM extends PlanBase {
             await pollSlaveHandoffPhase( 'vacated', 90000 );
             if ( this.stopped ) throw [ 'stopped' ];
 
-            // Step 7: LLM moves back to T_llm
+            // LLM moves back to T_llm and picks up everything
             if ( !await socket.emitMove( dir_str ) ) throw [ 'handoff: LLM failed to re-enter T_llm' ];
-
-            // Step 8: LLM picks up everything
             const picked = await socket.emitPickup();
             console.log( `[handoff-llm] Picked up ${picked.length} parcels. Delivering...` );
 
-            // Step 9: deliver to nearest delivery tile
+            // Deliver to nearest delivery tile
             const nearestDelivery = deliveryTiles.reduce(
                 ( best, t ) => { const d = distance( me, t ); return d < best.d ? { t, d } : best; },
                 { t: null, d: Infinity }
@@ -495,13 +494,18 @@ export class HandoffLLM extends PlanBase {
     }
 }
 
+/**
+ * @implements { Plan }
+ */
 export class GoToNeighborhood extends PlanBase {
+    /** @type { function( string, ...any ) : boolean } */
     static isApplicableTo ( action ) { return action === 'go_to_neighborhood'; }
 
+    /** @type { function( string, ...any ) : Promise<boolean> } */
     async execute ( action, tiles, pts ) {
         if ( this.stopped ) throw [ 'stopped' ];
 
-        // Avoid tiles currently occupied by visible agents, then sort by distance
+        // Avoid tiles occupied by visible agents, then sort by distance
         const occupiedKeys = new Set( Array.from( agents.values() ).map( a => `${Math.round(a.x)}_${Math.round(a.y)}` ) );
         const sorted = [ ...tiles ]
             .filter( t => !occupiedKeys.has( `${t.x}_${t.y}` ) )
@@ -525,7 +529,7 @@ export class GoToNeighborhood extends PlanBase {
 
         console.log( `[llm] Arrived at neighborhood (${me.x},${me.y}), waiting for slave...` );
 
-        // Poll slave-status.json until arrived: true or 60 s timeout
+        // Poll slave-status.json until slave arrives (60s timeout)
         const deadline = Date.now() + 60000;
         while ( Date.now() < deadline ) {
             if ( this.stopped ) throw [ 'stopped' ];
@@ -538,10 +542,8 @@ export class GoToNeighborhood extends PlanBase {
             await new Promise( r => setTimeout( r, 200 ) );
         }
 
-        // Signal slave to resume
+        // Signal slave to resume and mark mission complete
         writeFileSync( SLAVE_COMMAND_PATH, JSON.stringify( { cmd: 'RESUME' } ) );
-
-        // Signal the tool's poll loop that both agents have arrived and RESUME is sent
         try {
             const prev = existsSync( SLAVE_STATUS_PATH ) ? JSON.parse( readFileSync( SLAVE_STATUS_PATH, 'utf8' ) ) : {};
             writeFileSync( SLAVE_STATUS_PATH, JSON.stringify( { ...prev, neighborhoodDone: true }, null, 2 ) );
@@ -549,8 +551,7 @@ export class GoToNeighborhood extends PlanBase {
 
         console.log( '[llm] Both in neighborhood — RESUME sent to slave.' );
 
-        // Hold position — keeps BDI loop blocked here until freeze() stops this plan
-        console.log( `[llm] Holding position at (${me.x},${me.y})...` );
+        // Hold until freeze() stops this plan
         while ( !this.stopped ) {
             await new Promise( r => setTimeout( r, 200 ) );
         }

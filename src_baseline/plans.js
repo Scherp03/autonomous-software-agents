@@ -22,15 +22,9 @@ import { IntentionDeliberation } from './agent.js';
  * } } PlanClass
  */
 
-/**
- * Plan library
- * @type { PlanClass [] }
- */
+/** @type { PlanClass [] } */
 export const planLibrary = [];
 
-/**
- * @abstract
- */
 class PlanBase {
     #stopped = false;
     stop () {
@@ -39,12 +33,7 @@ class PlanBase {
     }
     get stopped () { return this.#stopped; }
 
-    // refers to the caller of the plan, for example an IntentionDeliberation
     #parent;
-
-    /**
-     * @param { PlanBase } parent
-     */
     constructor ( parent ) { this.#parent = parent; }
 
     /** @type { function(...any): void } */
@@ -57,7 +46,7 @@ class PlanBase {
     #sub_intentions = [];
 
     /**
-     * @param { [string, ...any] } predicate 
+     * @param { [string, ...any] } predicate
      * @returns { Promise<boolean> }
      */
     async subIntention ( predicate ) {
@@ -67,22 +56,12 @@ class PlanBase {
     }
 }
 
-/**
- * @implements { Plan }
- */
 export class Explore extends PlanBase {
-    
-    /**
-     * @type { function( string, ...any ) : boolean } 
-     */
     static isApplicableTo ( explore ) { return explore == 'explore'; }
 
-    /**
-     * @type { function( string, ...any ) : Promise<boolean> } 
-     */
     async execute () {
         if ( this.stopped ) throw [ 'stopped' ];
-        
+
         let target;
 
         if ( spawnTiles.length > 0 ) {
@@ -110,32 +89,22 @@ export class Explore extends PlanBase {
                 this.log( 'explore failed to go_to target', target, 'error:', error );
             }
         }
-    
+
         const dirs = ['up', 'down', 'left', 'right'];
         const randomDir = dirs[Math.floor(Math.random() * dirs.length)];
         await socket.emitMove(randomDir);
-        // await new Promise(res => setTimeout(res, 100)); 
-        
+
         return true;
     }
 }
 
-/**
- * @implements { Plan }
- */
 export class GoPickUp extends PlanBase {
-    /**
-     * @type { function( string, ...any ) : boolean } 
-     */
     static isApplicableTo ( go_pick_up, x, y, id ) { return go_pick_up == 'go_pick_up'; }
 
-    /**
-     * @type { function( string, ...any ) : Promise<boolean> } 
-     */
     async execute ( go_pick_up, x, y, id ) {
         if ( this.stopped ) throw [ 'stopped' ];
         await this.subIntention( [ 'go_to', x, y ] );
-        
+
         if ( this.stopped ) throw [ 'stopped' ];
         await socket.emitPickup();
         return true;
@@ -143,18 +112,12 @@ export class GoPickUp extends PlanBase {
 }
 
 export class GoDeliver extends PlanBase {
-    /**
-     * @type { function( string, ...any ) : boolean } 
-     */
     static isApplicableTo ( go_deliver ) { return go_deliver == 'go_deliver'; }
 
-    /**
-     * @type { function( string, ...any ) : Promise<boolean> } 
-     */
     async execute ( go_deliver, x, y ) {
         if ( this.stopped ) throw [ 'stopped' ];
         await this.subIntention( [ 'go_to', x, y ] );
-        
+
         if ( this.stopped ) throw [ 'stopped' ];
         await socket.emitPutdown();
         return true;
@@ -162,14 +125,8 @@ export class GoDeliver extends PlanBase {
 }
 
 export class AStarMove extends PlanBase {
-    /**
-     * @type { function( string, ...any ) : boolean } 
-     */
     static isApplicableTo ( go_to ) { return go_to == 'go_to'; }
 
-    /**
-     * @type { function( string, ...any ) : Promise<boolean> } 
-     */
     async execute ( go_to, targetX, targetY ) {
         targetX = Math.round(targetX);
         targetY = Math.round(targetY);
@@ -178,10 +135,9 @@ export class AStarMove extends PlanBase {
             if ( this.stopped ) throw [ 'stopped' ];
 
             const path = bfs( { x: me.x, y: me.y }, { x: targetX, y: targetY } );
-            
+
             if ( !path || path.length == 0 ) {
-                // await new Promise(res => setTimeout(res, 100)); 
-                throw [ 'no path to', targetX, targetY ]; 
+                throw [ 'no path to', targetX, targetY ];
             }
 
             const move = path[ 0 ];
@@ -189,7 +145,7 @@ export class AStarMove extends PlanBase {
 
             if ( !result ) {
                 this.log( `Move ${move} failed. Blacklisting tile temporarily.` );
-                
+
                 let blockX = Math.round(me.x);
                 let blockY = Math.round(me.y);
                 if (move == 'right') blockX += 1;
@@ -198,19 +154,10 @@ export class AStarMove extends PlanBase {
                 if (move == 'down')  blockY -= 1;
 
                 temporaryBlocks.set(`${blockX}_${blockY}`, Date.now() + 3000);
-                
-                // await new Promise(res => setTimeout(res, 100)); 
-                continue; 
+                continue;
             }
-
-            // await new Promise(res => setTimeout(res, 100));
         }
 
         return true;
     }
 }
-
-
-
-// // Export the array so the BDI engine can iterate over available plans
-// export const planLibrary = [ GoPickUp, GoDeliver, AStarMove, Explore ];
