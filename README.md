@@ -1,5 +1,7 @@
 # autonomous-software-agents
 
+Autonomous Agents developed to play a delivery-style game against other agents, developed by Professor Marco Robol for the Autonomous Software Agents master course.
+
 ## Agents
 
 Four agent implementations, all built on the same BDI skeleton (`beliefs.js`, `agent.js`, `plans.js`, `pathfinding.js`, `index.js`, `utils.js`):
@@ -23,9 +25,9 @@ npm install
 ```
 
 ```bash
-npm run bdi        # improved BDI agent
-npm run baseline   # baseline BDI agent (single instance)
+npm run bdi        # final BDI agent
+npm run baseline   # baseline simple BDI agent (single instance)
 npm run baselines  # one baseline instance per TOKEN_N in .env
-npm run llm        # BDI + LLM chat interface (requires LITELLM_* vars)
+npm run llm        # BDI + LLM (requires LITELLM_* vars)
 npm run slave      # slave agent, run alongside llm
 ```
