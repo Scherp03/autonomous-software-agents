@@ -15,17 +15,12 @@ export class IntentionRevision {
                 const intention = this.intention_queue[0];
 
                 console.log( 'intentionRevision.loop', this.intention_queue.map(i=>i.predicate) );
-                // Execution wrapped safely. 
-                // Plans should validate their own targets before/during execution.
                 try {
                     await intention.achieve();
                 } catch ( err ) {
-                    // Swallow expected plan failures or 'stopped' signals
                     console.log( 'Failed intention', ...intention.predicate, 'with error:', err )
                 }
 
-                // Only shift if the intention we just finished is still at index 0.
-                // (In case a 'Replace' cleared the array while we were yielding)
                 if (this.intention_queue[0] == intention) {
                     this.intention_queue.shift();
                 }
@@ -48,18 +43,15 @@ export class IntentionRevision {
 
 export class IntentionRevisionRevise extends IntentionRevision {
 
-    /**
-     * Helper method to evaluate the validity and utility of an intention.
-     * Utility is calculated as: Reward - Cost (distance).
-     * Returns -1 if the intention is invalid.
-     */
+    
+    // Helper method to evaluate the validity and utility of an intention.
     getUtility ( predicate ) {
         const [ action, x, y, id ] = predicate;
         const decayIntervalMs = parseMs( gameConfig.GAME.parcels.decaying_event );
         const decayPerStep    = gameConfig.CLOCK / decayIntervalMs;
 
         if ( action === 'solve_crate' ) {
-            return 10000; // Placeholder utility for crate solving, as it doesn't directly relate to parcels. Adjust as needed.
+            return 10000; // Placeholder utility for crate solving
         }
 
 
@@ -68,7 +60,7 @@ export class IntentionRevisionRevise extends IntentionRevision {
             if ( carried.length === 0 ) return -1;
             const dist = distance( me, { x, y } );
 
-            // sum of utilities of all parcels being delivered, where utility of each parcel is max(0, reward - decayPerStep * dist)
+            // Sum of utilities of all parcels being delivered, where utility of each parcel is max(0, reward - decayPerStep * dist)
             const partialUtility = carried.reduce( (sum, p) => sum + Math.max(0, p.reward - dist * decayPerStep), 0 );
 
             if ( partialUtility < 1 ) return -1; // If all parcels would have 0 or negative utility, skip delivery

@@ -12,17 +12,11 @@ export class IntentionRevision {
                 const intention = this.intention_queue[0];
 
                 console.log( 'intentionRevision.loop', this.intention_queue.map(i=>i.predicate) );
-                // Execution wrapped safely. 
-                // Plans should validate their own targets before/during execution.
                 try {
                     await intention.achieve();
                 } catch ( err ) {
-                    // Swallow expected plan failures or 'stopped' signals
                     console.log( 'Failed intention', ...intention.predicate, 'with error:', err )
                 }
-
-                // Only shift if the intention we just finished is still at index 0.
-                // (In case a 'Replace' cleared the array while we were yielding)
                 if (this.intention_queue[0] == intention) {
                     this.intention_queue.shift();
                 }

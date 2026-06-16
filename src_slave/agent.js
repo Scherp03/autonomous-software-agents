@@ -33,17 +33,12 @@ export class IntentionRevision {
                 const intention = this.intention_queue[0];
 
                 console.log( 'intentionRevision.loop', this.intention_queue.map(i=>i.predicate) );
-                // Execution wrapped safely.
-                // Plans should validate their own targets before/during execution.
                 try {
                     await intention.achieve();
                 } catch ( err ) {
-                    // Swallow expected plan failures or 'stopped' signals
-                    // console.log( 'Failed intention', ...intention.predicate, 'with error:', err )
+                    console.log( 'Failed intention', ...intention.predicate, 'with error:', err )
                 }
 
-                // Only shift if the intention we just finished is still at index 0.
-                // (In case a 'Replace' cleared the array while we were yielding)
                 if (this.intention_queue[0] == intention) {
                     this.intention_queue.shift();
                 }
@@ -66,11 +61,7 @@ export class IntentionRevision {
 
 export class IntentionRevisionRevise extends IntentionRevision {
 
-    /**
-     * Helper method to evaluate the validity and utility of an intention.
-     * Utility is calculated as: Reward - Cost (distance).
-     * Returns -1 if the intention is invalid.
-     */
+    // Helper method to evaluate the validity and utility of an intention.
     getUtility ( predicate ) {
         const [ action, x, y, id ] = predicate;
         const decayIntervalMs = parseMs( gameConfig.GAME.parcels.decaying_event );

@@ -1,6 +1,6 @@
 export const crateDomain = `
 (define (domain default)
-  (:requirements :strips :negative-preconditions)
+  (:requirements :strips)
   (:predicates 
     (left ?x1 ?x2) (right ?x1 ?x2)
     (up ?y1 ?y2) (down ?y1 ?y2)
